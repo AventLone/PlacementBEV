@@ -35,7 +35,7 @@ target_link_libraries(perception
     ${OpenCV_LIBS}
     ${TENSORRT_LIBRARY}
 )
-target_compile_features(perception PUBLIC c_std_99 cxx_std_17)  # Require C99 and C++17
+target_compile_features(perception PUBLIC c_std_99 cxx_std_23)  # Require C99 and C++17
 
 if (BUILD_TESTING)
     find_package(ament_lint_auto REQUIRED)

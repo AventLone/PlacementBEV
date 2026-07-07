@@ -6,6 +6,10 @@
 #include <message_filters/synchronizer.h>
 #include <tf2_ros/transform_listener.h>
 #include <tf2_eigen/tf2_eigen.hpp> // ROS 2 header
+#include <condition_variable>
+#include <mutex>
+#include <queue>
+#include <thread>
 #include "perception/tools/2d/FeatureMatchTracking.h"
 
 class Preprocess final : public rclcpp::Node
@@ -31,13 +35,16 @@ class Preprocess final : public rclcpp::Node
     {
         cv::Mat left_rgb, left_semantic;
         cv::Mat right_rgb, right_semantic;
+
+        cv::Mat left_fork_rgb, left_fork_semantic;
+        cv::Mat right_fork_rgb, right_fork_semantic;
     };
 
 public:
     explicit Preprocess(const std::string& name, const rclcpp::NodeOptions& options) : rclcpp::Node(name, options),
                                                                                        mT_fork2camera(Eigen::Isometry3f::Identity())
     {
-        initSubscritions();
+        initSubscriptions();
         initPublishers();
 
         mT_fork2camera.rotate(Eigen::AngleAxisf(M_PIf, Eigen::Vector3f::UnitZ()));
@@ -78,19 +85,22 @@ private:
 
     /*** Synchronized Subsribers ***/
     using ImgMsg = sensor_msgs::msg::Image;
-    using SyncPolicy = message_filters::sync_policies::ApproximateTime<ImgMsg, ImgMsg, ImgMsg, ImgMsg>;
-    message_filters::Subscriber<ImgMsg> mLeftRgbSub, mLeftSemanticSub, mRightRgbSub, mRightSemanticSub;
+    using SyncPolicy = message_filters::sync_policies::ApproximateTime<ImgMsg, ImgMsg, ImgMsg, ImgMsg, ImgMsg, ImgMsg, ImgMsg, ImgMsg>;
+    message_filters::Subscriber<ImgMsg> mLeftRgbSub, mLeftSemanticSub, mRightRgbSub, mRightSemanticSub,
+            mLeftForkRgbSub, mLeftForkSemanticSub, mRightForkRgbSub, mRightForkSemanticSub;
     std::unique_ptr<message_filters::Synchronizer<SyncPolicy>> mSynchronizer;
 
     /* Publishers */
     rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr mBevMapPub;
 
-    void initSubscritions();
+    void initSubscriptions();
 
     void initPublishers();
 
     void imgsHandler(const ImgMsg::ConstSharedPtr& left_rgb_msg, const ImgMsg::ConstSharedPtr& left_semantic_msg,
-                     const ImgMsg::ConstSharedPtr& right_rgb_msg, const ImgMsg::ConstSharedPtr& right_semantic_msg);
+                     const ImgMsg::ConstSharedPtr& right_rgb_msg, const ImgMsg::ConstSharedPtr& right_semantic_msg,
+                     const ImgMsg::ConstSharedPtr& left_fork_rgb_msg, const ImgMsg::ConstSharedPtr& left_fork_semantic_msg,
+                     const ImgMsg::ConstSharedPtr& right_fork_rgb_msg, const ImgMsg::ConstSharedPtr& right_fork_semantic_msg);
 
     void pushInBuffer(ImgSet&& img_set)
     {

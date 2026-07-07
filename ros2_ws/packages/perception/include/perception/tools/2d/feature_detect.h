@@ -45,7 +45,7 @@ static inline const cv::Mat LOWER_EDGE_KERNEL = (cv::Mat_<int>(3, 3) <<
                                                  0, 0, 0,
                                                  -1, -2, -1);
 
-static cv::Mat getEdgeKernel(const EdgeType edge_type)
+inline const cv::Mat& getEdgeKernel(const EdgeType edge_type)
 {
     switch (edge_type)
     {

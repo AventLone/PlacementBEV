@@ -42,13 +42,11 @@ std::optional<std::vector<Line>> detectConvexHullEdge(const cv::Mat& src_img, co
         return std::nullopt;
     }
     
-    const auto [min_x, max_x] = std::minmax_element(hull_points.begin(), hull_points.end(),
-                                                    [](const cv::Point& a, const cv::Point& b) -> bool
+    const auto [min_x, max_x] = std::minmax_element(hull_points.begin(), hull_points.end(), [](const cv::Point& a, const cv::Point& b) -> bool
                                                         {
                                                             return a.x < b.x;
                                                         });
-    const auto [min_y, max_y] = std::minmax_element(hull_points.begin(), hull_points.end(),
-                                                    [](const cv::Point& a, const cv::Point& b) -> bool
+    const auto [min_y, max_y] = std::minmax_element(hull_points.begin(), hull_points.end(), [](const cv::Point& a, const cv::Point& b) -> bool
                                                         {
                                                             return a.y < b.y;
                                                         });
@@ -105,6 +103,11 @@ std::vector<cv::Point2f> detectMinRect(const cv::Mat& src_img)
 {
     std::vector<cv::Point> non_zero_points;
     cv::findNonZero(src_img, non_zero_points);
+    if (non_zero_points.empty())
+    {
+        return {};
+    }
+
     const cv::RotatedRect rr = cv::minAreaRect(non_zero_points); // 最小外接矩形
     std::vector<cv::Point2f> corners(4);
     rr.points(corners.data()); // corners 是 Point2f[4]
@@ -114,6 +117,11 @@ std::vector<cv::Point2f> detectMinRect(const cv::Mat& src_img)
 
 Line detectRectEdge(const std::vector<cv::Point>& src_points, const EdgeType edge_type, cv::Mat* debug_img)
 {
+    if (src_points.empty())
+    {
+        return Line(cv::Point{}, cv::Point{});
+    }
+
     const cv::RotatedRect rr = cv::minAreaRect(src_points);
     std::vector<cv::Point2f> corners(4);
     rr.points(corners.data());

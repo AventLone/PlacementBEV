@@ -19,7 +19,7 @@ struct BevResult
     cv::Mat map_y; // CV_32FC1
 };
 
-static cv::Matx33d matToMatx33d(const cv::Mat& mat)
+inline cv::Matx33d matToMatx33d(const cv::Mat& mat)
 {
     CV_Assert(mat.rows == 3 && mat.cols == 3 && mat.type() == CV_64F);
 
@@ -34,7 +34,7 @@ static cv::Matx33d matToMatx33d(const cv::Mat& mat)
     return out;
 }
 
-static cv::Vec3d matToVec3d(const cv::Mat& mat)
+inline cv::Vec3d matToVec3d(const cv::Mat& mat)
 {
     CV_Assert(mat.total() == 3 && mat.type() == CV_64F);
 
@@ -131,67 +131,122 @@ inline cv::Mat getBev(const cv::Mat& img, const cv::Matx33d& K,
     return bev;
 }
 
-// def get_bev_image(img, K, R, T, bev_params):
-//     """
-//     img: 去畸变后的原图
-//     K: (3, 3) 内参矩阵
-//     R: (3, 3) 旋转矩阵 (World -> Camera)
-//     T: (3, 1) 平移向量 (World -> Camera)
-//     bev_params: BEV范围参数
-//     """
-//
-//     # 1. 定义BEV参数
-//     x_min, x_max = bev_params['x_range']  # 左右范围 (米)
-//     y_min, y_max = bev_params['y_range']  # 前后范围 (米)
-//     resolution = bev_params['resolution'] # 米/像素
-//
-//     # 计算BEV图像尺寸
-//     width = int((x_max - x_min) / resolution)
-//     height = int((y_max - y_min) / resolution)
-//
-//     # 2. 计算单应性矩阵 H (BEV物理坐标 -> 图像像素坐标)
-//     # 假设 Z=0，我们取 R 的第1列、第2列和 T 组成 3x3 矩阵
-//     # 注意：这取决于你的世界坐标系定义。
-//     # 通常设定：X为右，Y为前，Z为上。此时地面是Z=0。
-//     # 如果你的定义是：X为前，Y为左，Z为上，则需要取 R 的对应列。
-//     # 这里假设标准惯例：Target World Z=0.
-//
-//     # 构建投影矩阵：仅保留 R 的第1、2列 (对应X, Y) 和 T
-//     # target_matrix = K * [r1, r2, t]
-//     target_matrix = np.zeros((3, 3))
-//     target_matrix[:, 0] = R[:, 0] # r1
-//     target_matrix[:, 1] = R[:, 1] # r2
-//     target_matrix[:, 2] = T[:, 0] # t
-//     H = np.dot(K, target_matrix)
-//
-//     # 3. 这里的 H 是把 (X_w, Y_w, 1) 映射到 (u, v, 1)
-//     # 但我们需要把 BEV 像素坐标 (u_bev, v_bev) 映射到 物理坐标 (X_w, Y_w)
-//     # 再映射到 原图 (u, v)。
-//     # 我们可以构建一个从 BEV_Pixel -> World 的变换矩阵 M_scale
-//
-//     # BEV像素 (0,0) -> (x_min, y_max) (通常BEV图左上角对应物理空间的最远最左)
-//     # BEV像素 (u, v) -> World (x, y) = (x_min + u*res, y_max - v*res)
-//     # 这是一个简单的缩放和平移矩阵
-//     M_bev2world = np.array([
-//         [resolution, 0, x_min],
-//         [0, -resolution, y_max], # 注意Y轴方向，图像向下，物理坐标通常向前
-//         [0, 0, 1]
-//     ])
-//
-//     # 综合矩阵：BEV像素 -> 原图像素
-//     # H_total = H_world2img * M_bev2pixel
-//     H_total = np.dot(H, M_bev2world)
-//
-//     # 4. 执行反向映射
-//     # 使用 cv2.warpPerspective 并指定 WARP_INVERSE_MAP
-//     # 或者直接传入 H_total 的逆矩阵 (因为warpPerspective默认是 Src->Dst)
-//     # 但这里我们定义的 H_total 就是 Dst(BEV) -> Src(Img)，所以要用逆变换标志
-//
-//     bev_img = cv2.warpPerspective(
-//         img,
-//         H_total,
-//         (width, height),
-//         flags=cv2.INTER_LINEAR | cv2.WARP_INVERSE_MAP
-//     )
-//
-//     return bev_img
+struct CameraModel
+{
+    cv::Matx33d K;
+    cv::Matx33d Rcw; // world(or forklift) -> camera
+    cv::Vec3d tcw;
+    cv::Mat image;
+};
+
+inline std::pair<cv::Mat, cv::Mat> bevFusionV2(const std::vector<CameraModel>& cams, const BevConfig& cfg)
+{
+    const int bev_w = std::ceil((cfg.x_max - cfg.x_min) / cfg.resolution);
+    const int bev_h = std::ceil((cfg.y_max - cfg.y_min) / cfg.resolution);
+
+    cv::Mat bev(bev_h, bev_w, CV_8UC3, cv::Scalar(0, 0, 0));
+    cv::Mat bev_binary = cv::Mat::zeros(bev_h, bev_w, CV_8UC1);
+
+    for (int r = 0; r < bev_h; r++)
+    {
+        for (int c = 0; c < bev_w; c++)
+        {
+            const double x = cfg.x_min + (c + 0.5) * cfg.resolution;
+            const double y = cfg.y_max - (r + 0.5) * cfg.resolution;
+            cv::Vec3d p_w(x, y, 0.0);
+
+            for (const auto& [K, Rcw, tcw, image] : cams)
+            {
+                cv::Vec3d p_c = Rcw * p_w + tcw;
+
+                if (p_c[2] <= 1e-3)
+                {
+                    continue;
+                }
+
+                cv::Vec3d p = K * p_c;
+                const int u = static_cast<int>(std::round(p[0] / p[2]));
+                const int v = static_cast<int>(std::round(p[1] / p[2]));
+
+                if (u < 0 || u >= image.cols || v < 0 || v >= image.rows)
+                {
+                    continue;
+                }
+
+                // 优化内存访问，避免重复调用 ptr
+                // if (auto& bev_pixel = bev.ptr<cv::Vec3b>(r)[c]; bev_pixel == cv::Vec3b(0, 0, 0))
+                // {
+                //     if (const auto& img_pixel = image.ptr<cv::Vec3b>(v)[u]; img_pixel != cv::Vec3b(0, 0, 0))
+                //     {
+                //         bev_pixel = img_pixel;
+                //         bev_binary.ptr<uchar>(r)[c] = 255;
+                //     }
+                // }
+
+                if (const auto& img_pixel = image.ptr<cv::Vec3b>(v)[u]; img_pixel != cv::Vec3b(0, 0, 0))
+                {
+                    bev.ptr<cv::Vec3b>(r)[c] = img_pixel;
+                    bev_binary.ptr<uchar>(r)[c] = 255;
+                }
+            }
+        }
+    }
+
+    return {bev, bev_binary};
+}
+
+//生成可放置区域（Minkowski erosion）
+inline cv::Mat computeFeasibleRegion(const cv::Mat& free_space, const cv::Size box_size)
+{
+    const cv::Mat kernel = cv::getStructuringElement(cv::MORPH_RECT, box_size);
+    cv::Mat feasible;
+    cv::erode(free_space, feasible, kernel); // freeSpace: 1 = free, 0 = obstacle
+    return feasible;
+}
+
+//距离场（贴边评分用）
+inline cv::Mat computeDistanceField(const cv::Mat& free_space)
+{
+    const cv::Mat inv = 255 - free_space; // obstacle = 1
+    cv::Mat dist;
+    cv::distanceTransform(inv, dist, cv::DIST_L2, 5);
+    return dist;
+}
+
+struct Pose2D
+{
+    int x;
+    int y;
+    double score;
+};
+
+inline Pose2D findBestPlacement(const cv::Mat& feasible, const cv::Mat& dist_field, const float lambda_edge = 1.0f)
+{
+    Pose2D best{0, 0, -1e9};
+
+    for (int y = 0; y < feasible.rows; y++)
+    {
+        for (int x = 0; x < feasible.cols; x++)
+        {
+            if (feasible.ptr<uchar>(y)[x] == 0)
+                continue;
+
+            // box center or left-bottom depends on your convention
+            // int cx = x;
+            // int cy = y;
+
+            // score = "closer to boundary is better"
+            const float edge_score = dist_field.at<float>(y, x);
+
+            // optional: encourage packing near walls
+            const int boundary_bias = std::min({x, y, feasible.cols - x, feasible.rows - y});
+
+            if (const float score = -lambda_edge * edge_score + static_cast<float>(boundary_bias) * 0.5f; score > best.score)
+            {
+                best = {x, y, score};
+            }
+        }
+    }
+
+    return best;
+}
