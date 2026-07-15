@@ -1,9 +1,14 @@
 cmake_minimum_required(VERSION 3.28)
 project(perception LANGUAGES C CXX)
 
+# if (NOT CMAKE_BUILD_TYPE)
+#     set(CMAKE_BUILD_TYPE Release)
+# endif ()
+
 if (NOT CMAKE_BUILD_TYPE)
-    set(CMAKE_BUILD_TYPE Release)
+    set(CMAKE_BUILD_TYPE Debug)
 endif ()
+
 
 if (CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     add_compile_options(-Wall -Wextra -Wpedantic)
@@ -35,7 +40,7 @@ target_link_libraries(perception
     ${OpenCV_LIBS}
     ${TENSORRT_LIBRARY}
 )
-target_compile_features(perception PUBLIC c_std_99 cxx_std_23)  # Require C99 and C++17
+target_compile_features(perception PUBLIC c_std_99 cxx_std_23)  # Require C99 and C++23
 
 if (BUILD_TESTING)
     find_package(ament_lint_auto REQUIRED)

@@ -91,7 +91,7 @@ private:
     std::unique_ptr<message_filters::Synchronizer<SyncPolicy>> mSynchronizer;
 
     /* Publishers */
-    rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr mBevMapPub;
+    rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr mBevMapPub, mSlotVisPub;
 
     void initSubscriptions();
 
@@ -113,4 +113,18 @@ private:
     }
 
     void workerLoop();
+
+    static void visualizeSlot(cv::Mat& free_space, std::pair<int, int> slot_position, const cv::Size& slot_size)
+    {
+        // slot_position is the middle point of the right edge
+        int right_x = slot_position.first;
+        int center_y = slot_position.second;
+        
+        // Calculate top-left corner of the slot
+        int left_x = right_x - slot_size.width;
+        int top_y = center_y - slot_size.height / 2;
+        
+        // Draw rectangle
+        cv::rectangle(free_space, cv::Point(left_x, top_y), cv::Point(right_x, top_y + slot_size.height), cv::Scalar(0, 255, 0), -1);
+    }
 };
