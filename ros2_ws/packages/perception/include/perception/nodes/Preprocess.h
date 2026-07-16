@@ -114,17 +114,22 @@ private:
 
     void workerLoop();
 
-    static void visualizeSlot(cv::Mat& free_space, std::pair<int, int> slot_position, const cv::Size& slot_size)
+    static void visualizeSlot(cv::Mat& free_space, const Eigen::Vector3f& slot_pose, const cv::Size& slot_size)
     {
-        // slot_position is the middle point of the right edge
-        int right_x = slot_position.first;
-        int center_y = slot_position.second;
-        
-        // Calculate top-left corner of the slot
-        int left_x = right_x - slot_size.width;
-        int top_y = center_y - slot_size.height / 2;
-        
-        // Draw rectangle
-        cv::rectangle(free_space, cv::Point(left_x, top_y), cv::Point(right_x, top_y + slot_size.height), cv::Scalar(0, 255, 0), -1);
+        const cv::Point2f right_edge_midpoint(slot_pose.x(), slot_pose.y());
+        const float angle_deg = slot_pose.z() * 180.0f / static_cast<float>(CV_PI);
+        const float angle_rad = slot_pose.z();
+        const cv::Point2f width_axis(std::cos(angle_rad), std::sin(angle_rad));
+        const cv::Point2f center = right_edge_midpoint - 0.5f * static_cast<float>(slot_size.width) * width_axis;
+        const cv::RotatedRect slot_rect(center, cv::Size2f(static_cast<float>(slot_size.width), static_cast<float>(slot_size.height)), angle_deg);
+
+        cv::Point2f corners[4];
+        slot_rect.points(corners);
+        std::vector<cv::Point> polygon(4);
+        for (int i = 0; i < 4; ++i)
+        {
+            polygon[i] = corners[i];
+        }
+        cv::fillConvexPoly(free_space, polygon, cv::Scalar(0, 255, 0), cv::LINE_AA);
     }
 };

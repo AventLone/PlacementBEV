@@ -1,5 +1,6 @@
 #include <cv_bridge/cv_bridge.hpp>
 #include <algorithm>
+#include <chrono>
 #include <map>
 #include <ranges>
 #include <string>
@@ -206,9 +207,38 @@ static std::optional<Eigen::Vector3f> loadPoseEstimate(const cv::Mat& load_bev, 
     return Eigen::Vector3f{right_edge_mid.x, right_edge_mid.y, angle_deg * static_cast<float>(DEG2RAD)};
 }
 
-static std::optional<std::pair<int, int>> slotPoseEstimate(const cv::Mat& free_space, const cv::Size& load_size)
+
+static std::optional<Eigen::Vector3f> slotPoseEstimate(const cv::Mat& free_space, const cv::Size& load_size)
 {
-    const auto feasible_region = computeFeasibleRegion(free_space, load_size);
+    std::vector<cv::Point> free_points;
+    cv::findNonZero(free_space, free_points);
+    if (free_points.empty())
+    {
+        return std::nullopt;
+    }
+
+    const cv::RotatedRect free_bbox = cv::minAreaRect(free_points);
+    float angle_deg = free_bbox.angle;
+
+    if (angle_deg > 45.0F)
+    {
+        angle_deg -= 90.0F;
+    }
+    else if (angle_deg < -45.0F)
+    {
+        angle_deg += 90.0F;
+    }
+
+    const cv::Point2f center(static_cast<float>(free_space.cols) * 0.5F,
+                             static_cast<float>(free_space.rows) * 0.5F);
+    const cv::Mat to_aligned = cv::getRotationMatrix2D(center, -angle_deg, 1.0);
+
+    cv::Mat aligned_free_space;
+    cv::warpAffine(free_space, aligned_free_space, to_aligned, free_space.size(),
+                   cv::INTER_NEAREST, cv::BORDER_CONSTANT, cv::Scalar(0));
+
+
+    const auto feasible_region = computeFeasibleRegion(aligned_free_space, load_size);
 
     std::vector<cv::Point> feasible_points;
     cv::findNonZero(feasible_region, feasible_points);
@@ -216,17 +246,31 @@ static std::optional<std::pair<int, int>> slotPoseEstimate(const cv::Mat& free_s
     {
         return std::nullopt;
     }
+
     std::ranges::sort(feasible_points, std::less{}, &cv::Point::x);
-    const auto slot_position = std::ranges::max_element(feasible_points.begin(), feasible_points.begin() + std::min(20uz, feasible_points.size()),
-                                           {}, &cv::Point::y);
+    const auto slot_position = std::ranges::max_element(feasible_points.begin(),
+                                                        feasible_points.begin() + std::min(10uz, feasible_points.size()),
+                                                        {}, &cv::Point::y);
+    const cv::Point2f slot_center_aligned(static_cast<float>(slot_position->x + load_size.width / 2),
+                                          static_cast<float>(slot_position->y));
+    
     cv::Mat debug_img;
-    cv::cvtColor(free_space, debug_img, cv::COLOR_GRAY2BGR);
+    cv::cvtColor(aligned_free_space, debug_img, cv::COLOR_GRAY2BGR);
+    cv::rectangle(debug_img, cv::Rect(slot_center_aligned.x - load_size.width / 2, slot_center_aligned.y - load_size.height / 2, 
+        load_size.width, load_size.height), cv::Scalar(255, 255, 0), -1);
 
+    cv::Mat from_aligned;
+    cv::invertAffineTransform(to_aligned, from_aligned);
 
-    // cv::cvtColor(free_space, debug_img, cv::COLOR_GRAY2BGR);
-    cv::rectangle(debug_img, cv::Rect(slot_position->x - load_size.width / 2, slot_position->y - load_size.height / 2
-        , load_size.width, load_size.height), cv::Scalar(0, 255, 0), 2);
-    return std::make_pair(slot_position->x + load_size.width / 2, slot_position->y);
+    const cv::Point2f slot_center(
+        static_cast<float>(from_aligned.at<double>(0, 0) * slot_center_aligned.x +
+                           from_aligned.at<double>(0, 1) * slot_center_aligned.y +
+                           from_aligned.at<double>(0, 2)),
+        static_cast<float>(from_aligned.at<double>(1, 0) * slot_center_aligned.x +
+                           from_aligned.at<double>(1, 1) * slot_center_aligned.y +
+                           from_aligned.at<double>(1, 2)));
+
+    return Eigen::Vector3f{slot_center.x, slot_center.y, angle_deg * static_cast<float>(DEG2RAD)};
 }
 
 void Preprocess::workerLoop()
@@ -239,22 +283,21 @@ void Preprocess::workerLoop()
     BevConfig config;
     config.resolution = 0.01;
     config.x_max = 0.6;
-    config.x_min = -3.5;
-    config.y_max = 1.5;
-    config.y_min = -1.5;
+    config.x_min = -4.5;
+    config.y_max = 2.5;
+    config.y_min = -2.5;
 
     Eigen::Isometry3f temp_pose{Eigen::Isometry3f::Identity()};
     const float roll = -105.0f * DEG2RAD;
     const float pitch = 0.0f;
     const float yaw = 90.0f * DEG2RAD;
-    // const Eigen::Vector3f translation(1.25f, -0.5f, 1.2f);
     temp_pose.rotate(Eigen::AngleAxisf(yaw, Eigen::Vector3f::UnitZ()) *
                      Eigen::AngleAxisf(pitch, Eigen::Vector3f::UnitY()) *
                      Eigen::AngleAxisf(roll, Eigen::Vector3f::UnitX()));
     
     Eigen::Isometry3f Twc_l{temp_pose}, Twc_r{temp_pose}, Twc_lfork{temp_pose}, Twc_rfork{temp_pose};
-    const Eigen::Vector3f t_wc_l(1.25, -0.5, 1.2);
-    const Eigen::Vector3f t_wc_r(1.25, 0.5, 1.2);
+    const Eigen::Vector3f t_wc_l(1.25f, -0.5f, 1.2f);
+    const Eigen::Vector3f t_wc_r(1.25f, 0.5f, 1.2f);
 
     const Eigen::Vector3f t_wc_lfork(-1.39, -0.2, 0.18446156519147458);
     const Eigen::Vector3f t_wc_rfork(-1.39, 0.2, 0.18446156519147458);
@@ -263,50 +306,6 @@ void Preprocess::workerLoop()
     Twc_r.pretranslate(t_wc_r);
     Twc_lfork.pretranslate(t_wc_lfork);
     Twc_rfork.pretranslate(t_wc_rfork);
-
-    // Equivalent prerotate form:
-    // temp_pose.prerotate(Eigen::AngleAxisf(yaw, Eigen::Vector3f::UnitZ()) *
-    //                     Eigen::AngleAxisf(pitch, Eigen::Vector3f::UnitY()) *
-    //                     Eigen::AngleAxisf(roll, Eigen::Vector3f::UnitX()));
-    // Use pretranslate here when translation is expressed in the parent/world frame.
-    // translate() would apply the offset in the already-rotated local frame.
-
-    // const auto Rwc = rotZ(90.0) * rotY(0.0) * rotX(-105.0);
-    
-
-    // const cv::Matx44d Twc_l(Rwc(0, 0), Rwc(0, 1), Rwc(0, 2), t_wc_l(0),
-    //                         Rwc(1, 0), Rwc(1, 1), Rwc(1, 2), t_wc_l(1),
-    //                         Rwc(2, 0), Rwc(2, 1), Rwc(2, 2), t_wc_l(2),
-    //                         0.0, 0.0, 0.0, 1.0);
-    // const cv::Matx44d Twc_r(Rwc(0, 0), Rwc(0, 1), Rwc(0, 2), t_wc_r(0),
-    //                         Rwc(1, 0), Rwc(1, 1), Rwc(1, 2), t_wc_r(1),
-    //                         Rwc(2, 0), Rwc(2, 1), Rwc(2, 2), t_wc_r(2),
-    //                         0.0, 0.0, 0.0, 1.0);
-
-    // const cv::Matx44d Twc_lfork(Rwc(0, 0), Rwc(0, 1), Rwc(0, 2), t_wc_lfork(0),
-    //                             Rwc(1, 0), Rwc(1, 1), Rwc(1, 2), t_wc_lfork(1),
-    //                             Rwc(2, 0), Rwc(2, 1), Rwc(2, 2), t_wc_lfork(2),
-    //                             0.0, 0.0, 0.0, 1.0);
-    // const cv::Matx44d Twc_rfork(Rwc(0, 0), Rwc(0, 1), Rwc(0, 2), t_wc_rfork(0),
-    //                             Rwc(1, 0), Rwc(1, 1), Rwc(1, 2), t_wc_rfork(1),
-    //                             Rwc(2, 0), Rwc(2, 1), Rwc(2, 2), t_wc_rfork(2),
-    //                             0.0, 0.0, 0.0, 1.0);
-
-    // const auto Tcw_l = Twc_l.inv();
-    // const auto Tcw_r = Twc_r.inv();
-
-    // const auto Tcw_lfork = Twc_lfork.inv();
-    // const auto Tcw_rfork = Twc_rfork.inv();
-
-    // const auto Rcw_l = Tcw_l.get_minor<3, 3>(0, 0);
-    // const auto Rcw_r = Tcw_r.get_minor<3, 3>(0, 0);
-    // const cv::Vec3d t_cw_l(Tcw_l(0, 3), Tcw_l(1, 3), Tcw_l(2, 3));
-    // const cv::Vec3d t_cw_r(Tcw_r(0, 3), Tcw_r(1, 3), Tcw_r(2, 3));
-
-    // const auto Rcw_lfork = Tcw_lfork.get_minor<3, 3>(0, 0);
-    // const auto Rcw_rfork = Tcw_rfork.get_minor<3, 3>(0, 0);
-    // const cv::Vec3d t_cw_lfork(Tcw_lfork(0, 3), Tcw_lfork(1, 3), Tcw_lfork(2, 3));
-    // const cv::Vec3d t_cw_rfork(Tcw_rfork(0, 3), Tcw_rfork(1, 3), Tcw_rfork(2, 3));
 
     const auto Tcw_l = Twc_l.inverse();
     const auto Tcw_r = Twc_r.inverse();
@@ -341,7 +340,6 @@ void Preprocess::workerLoop()
     cameras[1].Rcw = Rcw_rfork;
     cameras[1].tcw = t_cw_rfork;
 
-    constexpr int load_length = 80;
     while (rclcpp::ok())
     {
         ImgSet imgs;
@@ -356,7 +354,7 @@ void Preprocess::workerLoop()
             mImgsBuffer.pop();
         }
 
-        const cv::Mat a = imgs.left_semantic * 30;
+        // const cv::Mat a = imgs.left_semantic * 30;
         constexpr uchar floor_label = 6;
         constexpr uchar load_label = 9;
         const cv::Mat left_valid = (imgs.left_semantic == floor_label) | (imgs.left_semantic == load_label);
@@ -375,7 +373,7 @@ void Preprocess::workerLoop()
         camera_frames_load[1].Rcw = Rcw_r;
         camera_frames_load[1].tcw = t_cw_r;
         camera_frames_load[1].image = imgs.right_semantic == load_label;
-
+        
         const cv::Mat load_bev = bevFusionBina(camera_frames_load, config);
         cv::Size load_dimensions;
         std::vector<cv::Point> load_bbox;
@@ -407,16 +405,16 @@ void Preprocess::workerLoop()
         camera_frames_floor[1].Rcw = Rcw_rfork;
         camera_frames_floor[1].tcw = t_cw_rfork;
         camera_frames_floor[1].image = imgs.right_fork_semantic == floor_label;
-
+        
         cv::Mat free_space_bev = bevFusionBina(camera_frames_floor, config);
+
         cv::Mat bev_visualizetion;
         cv::cvtColor(free_space_bev, bev_visualizetion, cv::COLOR_GRAY2RGB);
 
         free_space_bev.colRange(cv::Range(load_estimate_result.value()[0], free_space_bev.cols)).setTo(0);
-
         if(const auto estimate_result = slotPoseEstimate(free_space_bev, load_dimensions); estimate_result.has_value())
         {
-            cv::fillPoly(bev_visualizetion, std::vector<std::vector<cv::Point>>{load_bbox}, cv::Scalar(0, 0, 255), cv::LINE_AA);
+            cv::fillConvexPoly(bev_visualizetion, load_bbox, cv::Scalar(0, 0, 255), cv::LINE_AA);
             visualizeSlot(bev_visualizetion, estimate_result.value(), load_dimensions);
 
             cv_bridge::CvImage img_bridge;

@@ -11,38 +11,6 @@ struct BevConfig
     float resolution = 0.05f; // meter / pixel
 };
 
-struct BevResult
-{
-    cv::Mat bev_image; // CV_8UC3
-    cv::Mat bev_ground_mask; // CV_8UC1
-    cv::Mat valid_mask; // CV_8UC1
-    cv::Mat map_x; // CV_32FC1
-    cv::Mat map_y; // CV_32FC1
-};
-
-inline cv::Matx33d matToMatx33d(const cv::Mat& mat)
-{
-    CV_Assert(mat.rows == 3 && mat.cols == 3 && mat.type() == CV_64F);
-
-    cv::Matx33d out;
-    for (int r = 0; r < 3; ++r)
-    {
-        for (int c = 0; c < 3; ++c)
-        {
-            out(r, c) = mat.at<double>(r, c);
-        }
-    }
-    return out;
-}
-
-inline cv::Vec3d matToVec3d(const cv::Mat& mat)
-{
-    CV_Assert(mat.total() == 3 && mat.type() == CV_64F);
-
-    cv::Mat t = mat.reshape(1, 3);
-    return {t.at<double>(0, 0), t.at<double>(1, 0), t.at<double>(2, 0)};
-}
-
 struct CameraModel
 {
     Eigen::Matrix3f K;
@@ -140,7 +108,6 @@ inline cv::Mat bevFusionBina(const std::vector<CameraModel>& cams, const BevConf
 
     return bev;
 }
-
 
 //生成可放置区域（Minkowski erosion）
 inline cv::Mat computeFeasibleRegion(const cv::Mat& free_space, const cv::Size box_size)
