@@ -380,24 +380,29 @@ void Preprocess::workerLoop()
         cv::cvtColor(free_space_bev, bev_visualizetion, cv::COLOR_GRAY2RGB);
         free_space_bev.colRange(cv::Range(load_estimate_result.value()[0], free_space_bev.cols)).setTo(0);
 
+        cv::Mat load_mask = cv::Mat::zeros(free_space_bev.size(), CV_8UC1);
+        cv::fillConvexPoly(load_mask, load_bbox, cv::Scalar(255), cv::LINE_AA);
+        free_space_bev.setTo(0, load_mask);
+
+        /* Visualize load on fork and the slot */
+        cv::fillConvexPoly(bev_visualizetion, load_bbox, cv::Scalar(0, 0, 255), cv::LINE_AA);
+
         if(const auto estimate_result = slotPoseEstimate(free_space_bev, load_dimensions); estimate_result.has_value())
         {
-            /* Visualize load on fork and the slot */
-            cv::fillConvexPoly(bev_visualizetion, load_bbox, cv::Scalar(0, 0, 255), cv::LINE_AA);
             visualizeSlot(bev_visualizetion, estimate_result.value(), load_dimensions);
-
-            cv_bridge::CvImage img_bridge;
-            img_bridge.header.stamp = this->now(); // Optional: set a timestamp
-            img_bridge.header.frame_id = "camera_frame";
-            img_bridge.encoding = sensor_msgs::image_encodings::RGB8; // e.g., "bgr8"
-            img_bridge.image = bev_visualizetion;
-            auto ros_image = std::make_unique<sensor_msgs::msg::Image>();
-            img_bridge.toImageMsg(*ros_image);
-            mSlotVisPub->publish(std::move(ros_image));
         }
         else
         {
             RCLCPP_WARN(get_logger(), "No feasible BEV placement region found for current frame!");
         }
+
+        cv_bridge::CvImage img_bridge;
+        img_bridge.header.stamp = this->now(); // Optional: set a timestamp
+        img_bridge.header.frame_id = "camera_frame";
+        img_bridge.encoding = sensor_msgs::image_encodings::RGB8; // e.g., "bgr8"
+        img_bridge.image = bev_visualizetion;
+        auto ros_image = std::make_unique<sensor_msgs::msg::Image>();
+        img_bridge.toImageMsg(*ros_image);
+        mSlotVisPub->publish(std::move(ros_image));
     }
 }
