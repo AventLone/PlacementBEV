@@ -210,33 +210,19 @@ static std::optional<Eigen::Vector3f> loadPoseEstimate(const cv::Mat& load_bev, 
 
 static std::optional<Eigen::Vector3f> slotPoseEstimate(const cv::Mat& free_space, const cv::Size& load_size)
 {
-    std::vector<cv::Point> free_points;
-    cv::findNonZero(free_space, free_points);
-    if (free_points.empty())
+    float angle;
+    if(std::vector<cv::Point> free_bbox_corners; !feature2d::detectMinRect(free_space, free_bbox_corners, angle))
     {
         return std::nullopt;
     }
 
-    const cv::RotatedRect free_bbox = cv::minAreaRect(free_points);
-    float angle_deg = free_bbox.angle;
-
-    if (angle_deg > 45.0F)
-    {
-        angle_deg -= 90.0F;
-    }
-    else if (angle_deg < -45.0F)
-    {
-        angle_deg += 90.0F;
-    }
-
-    const cv::Point2f center(static_cast<float>(free_space.cols) * 0.5F,
-                             static_cast<float>(free_space.rows) * 0.5F);
-    const cv::Mat to_aligned = cv::getRotationMatrix2D(center, -angle_deg, 1.0);
+    const cv::Point2f center(static_cast<float>(free_space.cols) * 0.5f,
+                             static_cast<float>(free_space.rows) * 0.5f);
+    const cv::Mat to_aligned = cv::getRotationMatrix2D(center, -angle / DEG2RAD, 1.0);
 
     cv::Mat aligned_free_space;
     cv::warpAffine(free_space, aligned_free_space, to_aligned, free_space.size(),
                    cv::INTER_NEAREST, cv::BORDER_CONSTANT, cv::Scalar(0));
-
 
     const auto feasible_region = computeFeasibleRegion(aligned_free_space, load_size);
 
@@ -249,20 +235,20 @@ static std::optional<Eigen::Vector3f> slotPoseEstimate(const cv::Mat& free_space
 
     std::ranges::sort(feasible_points, std::less{}, &cv::Point::x);
     const auto slot_position = std::ranges::max_element(feasible_points.begin(),
-                                                        feasible_points.begin() + std::min(10uz, feasible_points.size()),
+                                                        feasible_points.begin() + std::min(20uz, feasible_points.size()),
                                                         {}, &cv::Point::y);
     const cv::Point2f slot_center_aligned(static_cast<float>(slot_position->x + load_size.width / 2),
                                           static_cast<float>(slot_position->y));
     
     cv::Mat debug_img;
     cv::cvtColor(aligned_free_space, debug_img, cv::COLOR_GRAY2BGR);
-    cv::rectangle(debug_img, cv::Rect(slot_center_aligned.x - load_size.width / 2, slot_center_aligned.y - load_size.height / 2, 
+    cv::rectangle(debug_img, cv::Rect(slot_center_aligned.x - load_size.width, slot_center_aligned.y - load_size.height / 2,
         load_size.width, load_size.height), cv::Scalar(255, 255, 0), -1);
 
     cv::Mat from_aligned;
     cv::invertAffineTransform(to_aligned, from_aligned);
 
-    const cv::Point2f slot_center(
+    const cv::Point2f slot_pose(
         static_cast<float>(from_aligned.at<double>(0, 0) * slot_center_aligned.x +
                            from_aligned.at<double>(0, 1) * slot_center_aligned.y +
                            from_aligned.at<double>(0, 2)),
@@ -270,7 +256,7 @@ static std::optional<Eigen::Vector3f> slotPoseEstimate(const cv::Mat& free_space
                            from_aligned.at<double>(1, 1) * slot_center_aligned.y +
                            from_aligned.at<double>(1, 2)));
 
-    return Eigen::Vector3f{slot_center.x, slot_center.y, angle_deg * static_cast<float>(DEG2RAD)};
+    return Eigen::Vector3f{slot_pose.x, slot_pose.y, angle};
 }
 
 void Preprocess::workerLoop()
@@ -288,9 +274,9 @@ void Preprocess::workerLoop()
     config.y_min = -2.5;
 
     Eigen::Isometry3f temp_pose{Eigen::Isometry3f::Identity()};
-    const float roll = -105.0f * DEG2RAD;
-    const float pitch = 0.0f;
-    const float yaw = 90.0f * DEG2RAD;
+    constexpr float roll = -105.0f * DEG2RAD;
+    constexpr float pitch = 0.0f;
+    constexpr float yaw = 90.0f * DEG2RAD;
     temp_pose.rotate(Eigen::AngleAxisf(yaw, Eigen::Vector3f::UnitZ()) *
                      Eigen::AngleAxisf(pitch, Eigen::Vector3f::UnitY()) *
                      Eigen::AngleAxisf(roll, Eigen::Vector3f::UnitX()));
@@ -321,7 +307,6 @@ void Preprocess::workerLoop()
     const Eigen::Matrix3f Rcw_rfork = Tcw_rfork.rotation();
     const Eigen::Vector3f t_cw_lfork = Tcw_lfork.translation();
     const Eigen::Vector3f t_cw_rfork = Tcw_rfork.translation();
-
 
     std::vector<CameraModel> cameras(4); // left_camera, right_camera, left_fork_camera, right_fork_camera;
     cameras[2].K = K;
@@ -385,35 +370,19 @@ void Preprocess::workerLoop()
         }
 
         /* Stage 2: Calculate free space slot pose */
-        std::vector<CameraModel> camera_frames_floor(4);
-        camera_frames_floor[2].K = K;
-        camera_frames_floor[2].Rcw = Rcw_l;
-        camera_frames_floor[2].tcw = t_cw_l;
-        camera_frames_floor[2].image = imgs.left_semantic == floor_label;
-        
-        camera_frames_floor[3].K = K;
-        camera_frames_floor[3].Rcw = Rcw_r;
-        camera_frames_floor[3].tcw = t_cw_r;
-        camera_frames_floor[3].image = imgs.right_semantic == floor_label;
-        
-        camera_frames_floor[0].K = K;
-        camera_frames_floor[0].Rcw = Rcw_lfork;
-        camera_frames_floor[0].tcw = t_cw_lfork;
-        camera_frames_floor[0].image = imgs.left_fork_semantic == floor_label;
-        
-        camera_frames_floor[1].K = K;
-        camera_frames_floor[1].Rcw = Rcw_rfork;
-        camera_frames_floor[1].tcw = t_cw_rfork;
-        camera_frames_floor[1].image = imgs.right_fork_semantic == floor_label;
-        
-        cv::Mat free_space_bev = bevFusionBina(camera_frames_floor, config);
+        cameras[2].image = imgs.left_semantic == floor_label;
+        cameras[3].image = imgs.right_semantic == floor_label;
+        cameras[0].image = imgs.left_fork_semantic == floor_label;
+        cameras[1].image = imgs.right_fork_semantic == floor_label;        
+        cv::Mat free_space_bev = bevFusionBina(cameras, config);
 
         cv::Mat bev_visualizetion;
         cv::cvtColor(free_space_bev, bev_visualizetion, cv::COLOR_GRAY2RGB);
-
         free_space_bev.colRange(cv::Range(load_estimate_result.value()[0], free_space_bev.cols)).setTo(0);
+
         if(const auto estimate_result = slotPoseEstimate(free_space_bev, load_dimensions); estimate_result.has_value())
         {
+            /* Visualize load on fork and the slot */
             cv::fillConvexPoly(bev_visualizetion, load_bbox, cv::Scalar(0, 0, 255), cv::LINE_AA);
             visualizeSlot(bev_visualizetion, estimate_result.value(), load_dimensions);
 

@@ -66,6 +66,8 @@ std::optional<std::vector<Line>> detectConvexHullEdge(const cv::Mat& src_img, Ed
 
 std::vector<cv::Point2f> detectMinRect(const cv::Mat& src_img);
 
+bool detectMinRect(const cv::Mat& src_img, std::vector<cv::Point>& corners, float& angle);
+
 Line detectRectEdge(const std::vector<cv::Point>& src_points, EdgeType edge_type, cv::Mat* debug_img = nullptr);
 
 Line detectRectEdge(const cv::Mat& src_img, EdgeType edge_type);

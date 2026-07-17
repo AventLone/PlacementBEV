@@ -6,7 +6,7 @@ namespace feature2d
 std::optional<std::vector<Line>> detectConvexHullEdge(const cv::Mat& src_img, const EdgeType edge_type)
 {
     static const auto pair_lines = [](const std::vector<cv::Point>& points1,
-                                      const std::vector<cv::Point>& points2) -> std::optional<std::vector<Line>>
+        const std::vector<cv::Point>& points2) -> std::optional<std::vector<Line>>
         {
             if (points1.empty() or points2.empty())
             {
@@ -41,15 +41,15 @@ std::optional<std::vector<Line>> detectConvexHullEdge(const cv::Mat& src_img, co
     {
         return std::nullopt;
     }
-    
+
     const auto [min_x, max_x] = std::minmax_element(hull_points.begin(), hull_points.end(), [](const cv::Point& a, const cv::Point& b) -> bool
-                                                        {
-                                                            return a.x < b.x;
-                                                        });
+        {
+            return a.x < b.x;
+        });
     const auto [min_y, max_y] = std::minmax_element(hull_points.begin(), hull_points.end(), [](const cv::Point& a, const cv::Point& b) -> bool
-                                                        {
-                                                            return a.y < b.y;
-                                                        });
+        {
+            return a.y < b.y;
+        });
     const int mid_x = (min_x->x + max_x->x) / 2;
     const int mid_y = (min_y->y + max_y->y) / 2;
 
@@ -83,17 +83,17 @@ std::optional<std::vector<Line>> detectConvexHullEdge(const cv::Mat& src_img, co
 
     switch (edge_type)
     {
-        case EdgeType::LEFT:
-            return pair_lines(quadrant_2, quadrant_3);
+    case EdgeType::LEFT:
+        return pair_lines(quadrant_2, quadrant_3);
 
-        case EdgeType::RIGHT:
-            return pair_lines(quadrant_1, quadrant_4);
+    case EdgeType::RIGHT:
+        return pair_lines(quadrant_1, quadrant_4);
 
-        case EdgeType::UPPER:
-            return pair_lines(quadrant_1, quadrant_2);
+    case EdgeType::UPPER:
+        return pair_lines(quadrant_1, quadrant_2);
 
-        case EdgeType::LOWER:
-            return pair_lines(quadrant_3, quadrant_4);
+    case EdgeType::LOWER:
+        return pair_lines(quadrant_3, quadrant_4);
     }
 
     return std::nullopt;
@@ -113,6 +113,40 @@ std::vector<cv::Point2f> detectMinRect(const cv::Mat& src_img)
     rr.points(corners.data()); // corners 是 Point2f[4]
 
     return corners;
+}
+
+bool detectMinRect(const cv::Mat& src_img, std::vector<cv::Point>& corners, float& angle)
+{
+    std::vector<cv::Point> non_zero_points;
+    cv::findNonZero(src_img, non_zero_points);
+    if (non_zero_points.empty())
+    {
+        return false;
+    }
+
+    const cv::RotatedRect rr = cv::minAreaRect(non_zero_points); // 最小外接矩形
+
+    corners.resize(4);
+
+    std::vector<cv::Point2f> temp(4);
+    rr.points(temp.data());
+    std::ranges::sort(temp, std::less{}, &cv::Point2f::x);
+
+    if (temp[3].y < temp[2].y)
+    {
+        angle = -std::atan2(temp[3].x - temp[2].x, temp[2].y - temp[3].y);
+    }
+    else
+    {
+        angle = std::atan2(temp[3].x - temp[2].x, temp[3].y - temp[2].y);
+    }
+
+    for (std::size_t i = 0; i < 4; ++i)
+    {
+        corners[i] = temp[i];
+    }
+
+    return true;
 }
 
 Line detectRectEdge(const std::vector<cv::Point>& src_points, const EdgeType edge_type, cv::Mat* debug_img)
@@ -137,9 +171,9 @@ Line detectRectEdge(const std::vector<cv::Point>& src_points, const EdgeType edg
     if (edge_type == EdgeType::LEFT || edge_type == EdgeType::RIGHT)
     {
         std::sort(corners.begin(), corners.end(), [](const cv::Point2f& a, const cv::Point2f& b) -> bool
-                      {
-                          return a.x < b.x;
-                      });
+            {
+                return a.x < b.x;
+            });
         if (edge_type == EdgeType::LEFT)
         {
             return Line(corners[0], corners[1]);
@@ -152,9 +186,9 @@ Line detectRectEdge(const std::vector<cv::Point>& src_points, const EdgeType edg
     else
     {
         std::sort(corners.begin(), corners.end(), [](const cv::Point2f& a, const cv::Point2f& b) -> bool
-                      {
-                          return a.y < b.y;
-                      });
+            {
+                return a.y < b.y;
+            });
         if (edge_type == EdgeType::UPPER)
         {
             return Line(corners[0], corners[1]);

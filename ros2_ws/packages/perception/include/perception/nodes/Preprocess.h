@@ -117,8 +117,8 @@ private:
     static void visualizeSlot(cv::Mat& free_space, const Eigen::Vector3f& slot_pose, const cv::Size& slot_size)
     {
         const cv::Point2f right_edge_midpoint(slot_pose.x(), slot_pose.y());
-        const float angle_deg = slot_pose.z() * 180.0f / static_cast<float>(CV_PI);
-        const float angle_rad = slot_pose.z();
+        const float angle_deg = -slot_pose.z() * 180.0f / static_cast<float>(CV_PI);
+        const float angle_rad = -slot_pose.z();
         const cv::Point2f width_axis(std::cos(angle_rad), std::sin(angle_rad));
         const cv::Point2f center = right_edge_midpoint - 0.5f * static_cast<float>(slot_size.width) * width_axis;
         const cv::RotatedRect slot_rect(center, cv::Size2f(static_cast<float>(slot_size.width), static_cast<float>(slot_size.height)), angle_deg);
