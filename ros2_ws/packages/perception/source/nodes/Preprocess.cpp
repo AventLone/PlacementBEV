@@ -242,8 +242,9 @@ static std::optional<Eigen::Vector3f> slotPoseEstimate(const cv::Mat& free_space
     
     cv::Mat debug_img;
     cv::cvtColor(aligned_free_space, debug_img, cv::COLOR_GRAY2BGR);
-    cv::rectangle(debug_img, cv::Rect(slot_center_aligned.x - load_size.width, slot_center_aligned.y - load_size.height / 2,
-        load_size.width, load_size.height), cv::Scalar(255, 255, 0), -1);
+    cv::rectangle(debug_img, cv::Rect(static_cast<int>(slot_center_aligned.x) - load_size.width,
+                  static_cast<int>(slot_center_aligned.y) - load_size.height / 2, load_size.width, load_size.height),
+                  cv::Scalar(255, 255, 0), -1);
 
     cv::Mat from_aligned;
     cv::invertAffineTransform(to_aligned, from_aligned);
@@ -342,9 +343,9 @@ void Preprocess::workerLoop()
         // const cv::Mat a = imgs.left_semantic * 30;
         constexpr uchar floor_label = 6;
         constexpr uchar load_label = 9;
-        const cv::Mat left_valid = (imgs.left_semantic == floor_label) | (imgs.left_semantic == load_label);
+        const cv::Mat left_valid = imgs.left_semantic == floor_label | imgs.left_semantic == load_label;
         imgs.left_semantic.setTo(0, left_valid == 0);
-        const cv::Mat right_valid = (imgs.right_semantic == floor_label) | (imgs.right_semantic == load_label);
+        const cv::Mat right_valid = imgs.right_semantic == floor_label | imgs.right_semantic == load_label;
         imgs.right_semantic.setTo(0, right_valid == 0);
 
         /* Stage 1: Calculate load dimentions and pose */
@@ -373,12 +374,12 @@ void Preprocess::workerLoop()
         cameras[2].image = imgs.left_semantic == floor_label;
         cameras[3].image = imgs.right_semantic == floor_label;
         cameras[0].image = imgs.left_fork_semantic == floor_label;
-        cameras[1].image = imgs.right_fork_semantic == floor_label;        
+        cameras[1].image = imgs.right_fork_semantic == floor_label;
         cv::Mat free_space_bev = bevFusionBina(cameras, config);
 
         cv::Mat bev_visualizetion;
         cv::cvtColor(free_space_bev, bev_visualizetion, cv::COLOR_GRAY2RGB);
-        free_space_bev.colRange(cv::Range(load_estimate_result.value()[0], free_space_bev.cols)).setTo(0);
+        free_space_bev.colRange(cv::Range(static_cast<int>(load_estimate_result.value()[0]), free_space_bev.cols)).setTo(0);
 
         cv::Mat load_mask = cv::Mat::zeros(free_space_bev.size(), CV_8UC1);
         cv::fillConvexPoly(load_mask, load_bbox, cv::Scalar(255), cv::LINE_AA);

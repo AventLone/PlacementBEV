@@ -14,6 +14,7 @@ endif ()
 # --------------------------------------------------------------------------------
 find_package(OpenCV REQUIRED)
 find_package(CUDAToolkit REQUIRED)
+find_package(PCL REQUIRED COMPONENTS common)
 
 set(TENSORRT_LIBRARY "/usr/lib/x86_64-linux-gnu/libnvinfer.so")
 
@@ -29,10 +30,12 @@ target_include_directories(perception PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include/${PROJECT_NAME}>
     ${TENSORRT_INCLUDE_DIR}
+    ${PCL_INCLUDE_DIRS}
 )
 target_link_libraries(perception
     CUDA::cudart
     ${OpenCV_LIBS}
+    ${PCL_LIBRARIES}
     ${TENSORRT_LIBRARY}
 )
 target_compile_features(perception PUBLIC c_std_99 cxx_std_23)  # Require C99 and C++23
