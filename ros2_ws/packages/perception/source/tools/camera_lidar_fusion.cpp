@@ -8,6 +8,9 @@
 namespace
 {
 
+constexpr double kVisibilityRayToleranceMeters = 0.05;
+constexpr double kVisibilityDistanceToleranceMeters = 0.05;
+
 cv::Mat normalizeDistCoeffs(const cv::Mat& dist_coeffs)
 {
     if (dist_coeffs.empty())
@@ -23,6 +26,39 @@ cv::Mat normalizeDistCoeffs(const cv::Mat& dist_coeffs)
     }
 
     throw std::invalid_argument("dist_coeffs must be a vector-like matrix.");
+}
+
+cv::Vec3d pointInCameraFrame(const pcl::PointXYZ& point_l, const CameraCalibration& camera)
+{
+    return camera.extrinsics.R_cl * cv::Vec3d(point_l.x, point_l.y, point_l.z) + camera.extrinsics.t_cl;
+}
+
+bool isVisibleFromCamera(const cv::Vec3d& point_c, const std::vector<cv::Vec3d>& cloud_points_c)
+{
+    const double target_ray_distance = cv::norm(point_c);
+    const cv::Vec3d ray_direction = point_c / target_ray_distance;
+
+    for (const cv::Vec3d& other_point_c : cloud_points_c)
+    {
+        const double other_ray_distance = other_point_c.dot(ray_direction);
+        if (other_ray_distance <= 0.0 || other_ray_distance >= target_ray_distance)
+        {
+            continue;
+        }
+
+        const cv::Vec3d ray_residual = other_point_c - other_ray_distance * ray_direction;
+        if (cv::norm(ray_residual) > kVisibilityRayToleranceMeters)
+        {
+            continue;
+        }
+
+        if (other_ray_distance + kVisibilityDistanceToleranceMeters < target_ray_distance)
+        {
+            return false;
+        }
+    }
+
+    return true;
 }
 
 } // namespace
@@ -105,7 +141,8 @@ bool CameraLidarFusion::projectPoint(const pcl::PointXYZ& point_l,
 
 std::vector<cv::Point2i> CameraLidarFusion::projectToImage(const pcl::PointCloud<pcl::PointXYZ>& lidar_points,
                                                            const cv::Size& image_size,
-                                                           const bool use_distortion) const
+                                                           const bool use_distortion,
+                                                           const bool use_visibility_test) const
 {
     if (!hasSingleCamera())
     {
@@ -115,17 +152,35 @@ std::vector<cv::Point2i> CameraLidarFusion::projectToImage(const pcl::PointCloud
     std::vector<cv::Point2i> pixels;
     pixels.reserve(lidar_points.size());
 
-    for (const auto& point : lidar_points)
+    std::vector<cv::Vec3d> camera_points;
+    if (use_visibility_test)
     {
-        cv::Point2i uv(-1, -1);
+        camera_points.reserve(lidar_points.size());
+        for (const auto& point : lidar_points)
+        {
+            camera_points.push_back(pointInCameraFrame(point, mCameras.front()));
+        }
+    }
 
-        if (double depth = 0.0; !projectPoint(point, mCameras.front(), uv, depth, use_distortion))
+    for (size_t point_idx = 0; point_idx < lidar_points.size(); ++point_idx)
+    {
+        const auto& point = lidar_points[point_idx];
+        cv::Point2i uv(-1, -1);
+        double depth = 0.0;
+
+        if (!projectPoint(point, mCameras.front(), uv, depth, use_distortion))
         {
             pixels.emplace_back(-1, -1);
             continue;
         }
 
         if (uv.x < 0 || uv.x >= image_size.width || uv.y < 0 || uv.y >= image_size.height)
+        {
+            pixels.emplace_back(-1, -1);
+            continue;
+        }
+
+        if (use_visibility_test && !isVisibleFromCamera(camera_points[point_idx], camera_points))
         {
             pixels.emplace_back(-1, -1);
             continue;
@@ -139,7 +194,8 @@ std::vector<cv::Point2i> CameraLidarFusion::projectToImage(const pcl::PointCloud
 
 pcl::PointCloud<pcl::PointXYZRGB>::Ptr CameraLidarFusion::colorizePointCloud(const pcl::PointCloud<pcl::PointXYZ>& lidar_points,
                                                                               const cv::Mat& bgr_image,
-                                                                              const bool use_distortion) const
+                                                                              const bool use_distortion,
+                                                                              const bool use_visibility_test) const
 {
     if (!hasSingleCamera())
     {
@@ -154,16 +210,13 @@ pcl::PointCloud<pcl::PointXYZRGB>::Ptr CameraLidarFusion::colorizePointCloud(con
     auto colored_points = std::make_shared<pcl::PointCloud<pcl::PointXYZRGB>>();
     colored_points->reserve(lidar_points.size());
 
-    for (const auto& point : lidar_points)
+    const std::vector<cv::Point2i> pixels = projectToImage(lidar_points, bgr_image.size(), use_distortion,
+                                                           use_visibility_test);
+
+    for (size_t point_idx = 0; point_idx < lidar_points.size(); ++point_idx)
     {
-        cv::Point2i uv(-1, -1);
-
-        if (double depth = 0.0; !projectPoint(point, mCameras.front(), uv, depth, use_distortion))
-        {
-            continue;
-        }
-
-        if (uv.x < 0 || uv.x >= bgr_image.cols || uv.y < 0 || uv.y >= bgr_image.rows)
+        const cv::Point2i& uv = pixels[point_idx];
+        if (uv.x < 0)
         {
             continue;
         }
@@ -171,9 +224,9 @@ pcl::PointCloud<pcl::PointXYZRGB>::Ptr CameraLidarFusion::colorizePointCloud(con
         const auto& bgr = bgr_image.at<cv::Vec3b>(uv.y, uv.x);
 
         pcl::PointXYZRGB out;
-        out.x = point.x;
-        out.y = point.y;
-        out.z = point.z;
+        out.x = lidar_points[point_idx].x;
+        out.y = lidar_points[point_idx].y;
+        out.z = lidar_points[point_idx].z;
         out.r = bgr[2];
         out.g = bgr[1];
         out.b = bgr[0];
@@ -190,7 +243,8 @@ pcl::PointCloud<pcl::PointXYZRGB>::Ptr CameraLidarFusion::colorizePointCloud(con
 std::vector<cv::Point2i> CameraLidarFusion::projectToImages(const pcl::PointCloud<pcl::PointXYZ>& lidar_points,
                                                             const std::vector<cv::Size>& image_sizes,
                                                             std::vector<int>& camera_indices,
-                                                            const bool use_distortion) const
+                                                            const bool use_distortion,
+                                                            const bool use_visibility_test) const
 {
     if (image_sizes.size() != mCameras.size())
     {
@@ -200,11 +254,26 @@ std::vector<cv::Point2i> CameraLidarFusion::projectToImages(const pcl::PointClou
     std::vector<cv::Point2i> pixels;
     pixels.reserve(lidar_points.size());
 
+    std::vector<std::vector<cv::Vec3d>> camera_points;
+    if (use_visibility_test)
+    {
+        camera_points.resize(mCameras.size());
+        for (size_t cam_idx = 0; cam_idx < mCameras.size(); ++cam_idx)
+        {
+            camera_points[cam_idx].reserve(lidar_points.size());
+            for (const auto& point : lidar_points)
+            {
+                camera_points[cam_idx].push_back(pointInCameraFrame(point, mCameras[cam_idx]));
+            }
+        }
+    }
+
     camera_indices.clear();
     camera_indices.reserve(lidar_points.size());
 
-    for (const auto& point : lidar_points)
+    for (size_t point_idx = 0; point_idx < lidar_points.size(); ++point_idx)
     {
+        const auto& point = lidar_points[point_idx];
         cv::Point2i best_uv(-1, -1);
         int best_camera = -1;
         double best_depth = std::numeric_limits<double>::max();
@@ -231,6 +300,15 @@ std::vector<cv::Point2i> CameraLidarFusion::projectToImages(const pcl::PointClou
                 best_uv = uv;
                 best_camera = static_cast<int>(cam_idx);
             }
+
+        }
+
+        if (use_visibility_test && best_camera >= 0 &&
+            !isVisibleFromCamera(camera_points[static_cast<size_t>(best_camera)][point_idx],
+                                 camera_points[static_cast<size_t>(best_camera)]))
+        {
+            best_uv = {-1, -1};
+            best_camera = -1;
         }
 
         pixels.push_back(best_uv);
@@ -242,7 +320,8 @@ std::vector<cv::Point2i> CameraLidarFusion::projectToImages(const pcl::PointClou
 
 pcl::PointCloud<pcl::PointXYZRGB>::Ptr CameraLidarFusion::colorizePointCloudMultiCamera(const pcl::PointCloud<pcl::PointXYZ>& lidar_points,
                                                                                           const std::vector<cv::Mat>& bgr_images,
-                                                                                          const bool use_distortion) const
+                                                                                          const bool use_distortion,
+                                                                                          const bool use_visibility_test) const
 {
     if (bgr_images.size() != mCameras.size())
     {
@@ -261,7 +340,8 @@ pcl::PointCloud<pcl::PointXYZRGB>::Ptr CameraLidarFusion::colorizePointCloudMult
     }
 
     std::vector<int> camera_indices;
-    const std::vector<cv::Point2i> pixels = projectToImages(lidar_points, image_sizes, camera_indices, use_distortion);
+    const std::vector<cv::Point2i> pixels = projectToImages(lidar_points, image_sizes, camera_indices, use_distortion,
+                                                            use_visibility_test);
 
     auto colored_points = std::make_shared<pcl::PointCloud<pcl::PointXYZRGB>>();
     colored_points->reserve(lidar_points.size());
