@@ -10,9 +10,10 @@
 #include <mutex>
 #include <queue>
 #include <thread>
-#include "perception/tools/2d/FeatureMatchTracking.h"
+// #include "perception/tools/2d/FeatureMatchTracking.h"
+#include "perception/tools/semantic_segmentor.h"
 
-class Preprocess final : public rclcpp::Node
+class BEV final : public rclcpp::Node
 {
     /* K = [fx 0 cx; 0 fy cy; 0 0 1] */
     static constexpr float cx = 480.0f;
@@ -33,15 +34,14 @@ class Preprocess final : public rclcpp::Node
 
     struct ImgSet
     {
-        cv::Mat left_rgb, left_semantic;
-        cv::Mat right_rgb, right_semantic;
-
-        cv::Mat left_fork_rgb, left_fork_semantic;
-        cv::Mat right_fork_rgb, right_fork_semantic;
+        cv::Mat left_rgb;
+        cv::Mat right_rgb;
+        cv::Mat left_fork_rgb;
+        cv::Mat right_fork_rgb;
     };
 
 public:
-    explicit Preprocess(const std::string& name, const rclcpp::NodeOptions& options) : rclcpp::Node(name, options),
+    explicit BEV(const std::string& name, const rclcpp::NodeOptions& options) : rclcpp::Node(name, options),
                                                                                        mT_fork2camera(Eigen::Isometry3f::Identity())
     {
         initSubscriptions();
@@ -51,14 +51,26 @@ public:
         mT_fork2camera.prerotate(Eigen::AngleAxisf(-M_PIf / 7.0f, Eigen::Vector3f::UnitY()));
         mT_fork2camera.pretranslate(Eigen::Vector3f(-0.35f, -0.03f, 0.56f));
 
+        constexpr const char* model_path =
+            "/home/avent/Desktop/Image-Segmentation/SemanticSegmentation/Segformer/outputs/segformer_singlebatch.plan";
+        mSegmentors.reserve(4);
+        for (int camera_index = 0; camera_index < 4; ++camera_index)
+        {
+            mSegmentors.push_back(std::make_unique<SegFormerSegmentor>(model_path));
+            if (mSegmentors.back()->batchSize() != 1)
+            {
+                throw std::runtime_error("BEV concurrent inference requires a batch-1 engine.");
+            }
+        }
+
         // Force the node to use simulation time
         this->set_parameter(rclcpp::Parameter("use_sim_time", true));
         RCLCPP_INFO(this->get_logger(), "Current Sim Time: %f", this->now().seconds());
-        mMainWorker = std::thread(&Preprocess::workerLoop, this);
+        mMainWorker = std::thread(&BEV::workerLoop, this);
         RCLCPP_INFO(get_logger(), "The node has been activated.");
     }
 
-    ~Preprocess() override
+    ~BEV() override
     {
         //
         {
@@ -85,22 +97,22 @@ private:
 
     /*** Synchronized Subsribers ***/
     using ImgMsg = sensor_msgs::msg::Image;
-    using SyncPolicy = message_filters::sync_policies::ApproximateTime<ImgMsg, ImgMsg, ImgMsg, ImgMsg, ImgMsg, ImgMsg, ImgMsg, ImgMsg>;
-    message_filters::Subscriber<ImgMsg> mLeftRgbSub, mLeftSemanticSub, mRightRgbSub, mRightSemanticSub,
-            mLeftForkRgbSub, mLeftForkSemanticSub, mRightForkRgbSub, mRightForkSemanticSub;
+    using SyncPolicy = message_filters::sync_policies::ApproximateTime<ImgMsg, ImgMsg, ImgMsg, ImgMsg>;
+    message_filters::Subscriber<ImgMsg> mLeftRgbSub, mRightRgbSub, mLeftForkRgbSub, mRightForkRgbSub;
     std::unique_ptr<message_filters::Synchronizer<SyncPolicy>> mSynchronizer;
 
     /* Publishers */
     rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr mBevMapPub, mSlotVisPub;
 
+    /* DL model */
+    std::vector<std::unique_ptr<SegFormerSegmentor>> mSegmentors;
+
     void initSubscriptions();
 
     void initPublishers();
 
-    void imgsHandler(const ImgMsg::ConstSharedPtr& left_rgb_msg, const ImgMsg::ConstSharedPtr& left_semantic_msg,
-                     const ImgMsg::ConstSharedPtr& right_rgb_msg, const ImgMsg::ConstSharedPtr& right_semantic_msg,
-                     const ImgMsg::ConstSharedPtr& left_fork_rgb_msg, const ImgMsg::ConstSharedPtr& left_fork_semantic_msg,
-                     const ImgMsg::ConstSharedPtr& right_fork_rgb_msg, const ImgMsg::ConstSharedPtr& right_fork_semantic_msg);
+    void imgsHandler(const ImgMsg::ConstSharedPtr& left_rgb_msg, const ImgMsg::ConstSharedPtr& right_rgb_msg,
+                     const ImgMsg::ConstSharedPtr& left_fork_rgb_msg, const ImgMsg::ConstSharedPtr& right_fork_rgb_msg);
 
     void pushInBuffer(ImgSet&& img_set)
     {

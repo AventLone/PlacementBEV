@@ -72,6 +72,8 @@ Line detectRectEdge(const std::vector<cv::Point>& src_points, EdgeType edge_type
 
 Line detectRectEdge(const cv::Mat& src_img, EdgeType edge_type);
 
+cv::Mat getBiggestComponent(const cv::Mat& src_img);
+
 inline void detectEdge(const cv::Mat& src, cv::Mat& dst, const EdgeType edge_type = EdgeType::RIGHT)
 {
     const cv::Mat& kernel = getEdgeKernel(edge_type);
@@ -89,4 +91,6 @@ inline void detectEdge(const cv::Mat& src, cv::Mat& dst, const EdgeType edge_typ
 }
 
 bool findInliers(const cv::Mat& src_img, std::vector<cv::Point>& inliers, float dist_thresh, int iters = 300);
+
+
 }

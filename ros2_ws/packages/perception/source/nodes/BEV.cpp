@@ -6,7 +6,7 @@
 #include <string>
 #include "perception/tools/2d/feature_detect.h"
 #include "perception/tools/bev.h"
-#include "perception/nodes/Preprocess.h"
+#include "perception/nodes/BEV.h"
 
 enum
 {
@@ -15,7 +15,7 @@ enum
     GOODS = 2
 };
 
-void Preprocess::initSubscriptions()
+void BEV::initSubscriptions()
 {
     const std::string params_prefix = "TopicName.Sensor.Camera";
     this->declare_parameters<std::string>(params_prefix, {
@@ -38,36 +38,31 @@ void Preprocess::initSubscriptions()
 
     mLeftRgbSub.subscribe(this, camera_topics.at("Body.Left"));
     mRightRgbSub.subscribe(this, camera_topics.at("Body.Right"));
-    mLeftSemanticSub.subscribe(this, camera_topics.at("Body.LeftSemantic"));
-    mRightSemanticSub.subscribe(this, camera_topics.at("Body.RightSemantic"));
+    // mLeftSemanticSub.subscribe(this, camera_topics.at("Body.LeftSemantic"));
+    // mRightSemanticSub.subscribe(this, camera_topics.at("Body.RightSemantic"));
     mLeftForkRgbSub.subscribe(this, camera_topics.at("Fork.Left"));
-    mLeftForkSemanticSub.subscribe(this, camera_topics.at("Fork.LeftSemantic"));
+    // mLeftForkSemanticSub.subscribe(this, camera_topics.at("Fork.LeftSemantic"));
     mRightForkRgbSub.subscribe(this, camera_topics.at("Fork.Right"));
-    mRightForkSemanticSub.subscribe(this, camera_topics.at("Fork.RightSemantic"));
-    mSynchronizer = std::make_unique<message_filters::Synchronizer<SyncPolicy>>(SyncPolicy(8), mLeftRgbSub, mLeftSemanticSub,
-                                                                                mRightRgbSub, mRightSemanticSub,
-                                                                                mLeftForkRgbSub, mLeftForkSemanticSub,
-                                                                                mRightForkRgbSub, mRightForkSemanticSub);
+    // mRightForkSemanticSub.subscribe(this, camera_topics.at("Fork.RightSemantic"));
+    mSynchronizer = std::make_unique<message_filters::Synchronizer<SyncPolicy>>(SyncPolicy(8), mLeftRgbSub,
+                                                                                mRightRgbSub, mLeftForkRgbSub,
+                                                                                mRightForkRgbSub);
 
     // 设置更小的时间容差（单位：秒）
     mSynchronizer->setMaxIntervalDuration(rclcpp::Duration(0, 10 * 100000)); // 10ms 容差
-    mSynchronizer->registerCallback(std::bind(&Preprocess::imgsHandler, this,
+    mSynchronizer->registerCallback(std::bind(&BEV::imgsHandler, this,
                                               std::placeholders::_1, std::placeholders::_2,
-                                              std::placeholders::_3, std::placeholders::_4,
-                                              std::placeholders::_5, std::placeholders::_6,
-                                              std::placeholders::_7, std::placeholders::_8));
+                                              std::placeholders::_3, std::placeholders::_4));
 }
 
-void Preprocess::initPublishers()
+void BEV::initPublishers()
 {
     mBevMapPub = create_publisher<sensor_msgs::msg::Image>("/bev_map", rclcpp::SensorDataQoS());
     mSlotVisPub = create_publisher<sensor_msgs::msg::Image>("/bev_map_slot_vis", rclcpp::SensorDataQoS());
 }
 
-void Preprocess::imgsHandler(const ImgMsg::ConstSharedPtr& left_rgb_msg, const ImgMsg::ConstSharedPtr& left_semantic_msg,
-                             const ImgMsg::ConstSharedPtr& right_rgb_msg, const ImgMsg::ConstSharedPtr& right_semantic_msg,
-                             const ImgMsg::ConstSharedPtr& left_fork_rgb_msg, const ImgMsg::ConstSharedPtr& left_fork_semantic_msg,
-                             const ImgMsg::ConstSharedPtr& right_fork_rgb_msg, const ImgMsg::ConstSharedPtr& right_fork_semantic_msg)
+void BEV::imgsHandler(const ImgMsg::ConstSharedPtr& left_rgb_msg, const ImgMsg::ConstSharedPtr& right_rgb_msg,
+                      const ImgMsg::ConstSharedPtr& left_fork_rgb_msg, const ImgMsg::ConstSharedPtr& right_fork_rgb_msg)
 {
     /* Get the pose of the forks */
     // Eigen::Isometry3f T_body2fork;
@@ -88,13 +83,10 @@ void Preprocess::imgsHandler(const ImgMsg::ConstSharedPtr& left_rgb_msg, const I
     {
         const auto left_rgb_ptr = cv_bridge::toCvShare(left_rgb_msg, sensor_msgs::image_encodings::BGRA8);
         const auto right_rgb_ptr = cv_bridge::toCvShare(right_rgb_msg, sensor_msgs::image_encodings::BGRA8);
-        const auto left_semantic_ptr = cv_bridge::toCvShare(left_semantic_msg, sensor_msgs::image_encodings::TYPE_32SC1);
-        const auto right_semantic_ptr = cv_bridge::toCvShare(right_semantic_msg, sensor_msgs::image_encodings::TYPE_32SC1);
 
         const auto left_fork_rgb_ptr = cv_bridge::toCvShare(left_fork_rgb_msg, sensor_msgs::image_encodings::BGRA8);
         const auto right_fork_rgb_ptr = cv_bridge::toCvShare(right_fork_rgb_msg, sensor_msgs::image_encodings::BGRA8);
-        const auto left_fork_semantic_ptr = cv_bridge::toCvShare(left_fork_semantic_msg, sensor_msgs::image_encodings::TYPE_32SC1);
-        const auto right_fork_semantic_ptr = cv_bridge::toCvShare(right_fork_semantic_msg, sensor_msgs::image_encodings::TYPE_32SC1);
+
 
         // img_set.T_body2fork = T_body2fork;
         cv::cvtColor(left_rgb_ptr->image, img_set.left_rgb, cv::COLOR_BGRA2RGB);
@@ -102,12 +94,6 @@ void Preprocess::imgsHandler(const ImgMsg::ConstSharedPtr& left_rgb_msg, const I
 
         cv::cvtColor(left_fork_rgb_ptr->image, img_set.left_fork_rgb, cv::COLOR_BGRA2RGB);
         cv::cvtColor(right_fork_rgb_ptr->image, img_set.right_fork_rgb, cv::COLOR_BGRA2RGB);
-
-        left_semantic_ptr->image.convertTo(img_set.left_semantic, CV_8UC1);
-        right_semantic_ptr->image.convertTo(img_set.right_semantic, CV_8UC1);
-
-        left_fork_semantic_ptr->image.convertTo(img_set.left_fork_semantic, CV_8UC1);
-        right_fork_semantic_ptr->image.convertTo(img_set.right_fork_semantic, CV_8UC1);
     }
     catch (const cv_bridge::Exception& ex)
     {
@@ -207,7 +193,6 @@ static std::optional<Eigen::Vector3f> loadPoseEstimate(const cv::Mat& load_bev, 
     return Eigen::Vector3f{right_edge_mid.x, right_edge_mid.y, angle_deg * static_cast<float>(DEG2RAD)};
 }
 
-
 static std::optional<Eigen::Vector3f> slotPoseEstimate(const cv::Mat& free_space, const cv::Size& load_size)
 {
     float angle;
@@ -260,7 +245,7 @@ static std::optional<Eigen::Vector3f> slotPoseEstimate(const cv::Mat& free_space
     return Eigen::Vector3f{slot_pose.x, slot_pose.y, angle};
 }
 
-void Preprocess::workerLoop()
+void BEV::workerLoop()
 {
     Eigen::Matrix3f K;
     K << fx, 0.0f, cx,
@@ -270,7 +255,7 @@ void Preprocess::workerLoop()
     BevConfig config;
     config.resolution = 0.01;
     config.x_max = 0.6;
-    config.x_min = -4.5;
+    config.x_min = -5.5;
     config.y_max = 2.5;
     config.y_min = -2.5;
 
@@ -286,8 +271,8 @@ void Preprocess::workerLoop()
     const Eigen::Vector3f t_wc_l(1.25f, -0.5f, 1.2f);
     const Eigen::Vector3f t_wc_r(1.25f, 0.5f, 1.2f);
 
-    const Eigen::Vector3f t_wc_lfork(-1.39, -0.2, 0.18446156519147458);
-    const Eigen::Vector3f t_wc_rfork(-1.39, 0.2, 0.18446156519147458);
+    const Eigen::Vector3f t_wc_lfork(-1.39, -0.2, 0.5);
+    const Eigen::Vector3f t_wc_rfork(-1.39, 0.2, 0.5);
 
     Twc_l.pretranslate(t_wc_l);
     Twc_r.pretranslate(t_wc_r);
@@ -341,24 +326,44 @@ void Preprocess::workerLoop()
         }
 
         // const cv::Mat a = imgs.left_semantic * 30;
-        constexpr uchar floor_label = 6;
-        constexpr uchar load_label = 9;
-        const cv::Mat left_valid = imgs.left_semantic == floor_label | imgs.left_semantic == load_label;
-        imgs.left_semantic.setTo(0, left_valid == 0);
-        const cv::Mat right_valid = imgs.right_semantic == floor_label | imgs.right_semantic == load_label;
-        imgs.right_semantic.setTo(0, right_valid == 0);
+        constexpr uchar floor_label = 3;
+        constexpr uchar load_label = 2;
+        // const cv::Mat left_valid = imgs.left_semantic == floor_label | imgs.left_semantic == load_label;
+        // imgs.left_semantic.setTo(0, left_valid == 0);
+        // const cv::Mat right_valid = imgs.right_semantic == floor_label | imgs.right_semantic == load_label;
+        // imgs.right_semantic.setTo(0, right_valid == 0);
+
+        /* Segment these 4 frames */
+        const std::array<cv::Mat*, 4> images = {&imgs.left_fork_rgb, &imgs.right_fork_rgb, &imgs.left_rgb, &imgs.right_rgb};
+        std::vector<std::future<SemanticResult>> futures;
+        futures.reserve(images.size());
+        for (size_t image_index = 0; image_index < images.size(); ++image_index)
+        {
+            futures.push_back(std::async(std::launch::async,
+                [&segmentor = *mSegmentors[image_index], image = images[image_index]]
+                {
+                    return segmentor.segment(*image, false);
+                }));
+        }
+
+        std::vector<SemanticResult> results;
+        results.reserve(images.size());
+        for (auto& future : futures)
+        {
+            results.push_back(future.get());
+        }
 
         /* Stage 1: Calculate load dimentions and pose */
         std::vector<CameraModel> camera_frames_load(2);
         camera_frames_load[0].K = K;
         camera_frames_load[0].Rcw = Rcw_l;
         camera_frames_load[0].tcw = t_cw_l;
-        camera_frames_load[0].image = imgs.left_semantic == load_label;
+        camera_frames_load[0].image = results[2].class_map == load_label;
         
         camera_frames_load[1].K = K;
         camera_frames_load[1].Rcw = Rcw_r;
         camera_frames_load[1].tcw = t_cw_r;
-        camera_frames_load[1].image = imgs.right_semantic == load_label;
+        camera_frames_load[1].image = results[3].class_map == load_label;
         
         const cv::Mat load_bev = bevFusionBina(camera_frames_load, config);
         cv::Size load_dimensions;
@@ -371,11 +376,55 @@ void Preprocess::workerLoop()
         }
 
         /* Stage 2: Calculate free space slot pose */
-        cameras[2].image = imgs.left_semantic == floor_label;
-        cameras[3].image = imgs.right_semantic == floor_label;
-        cameras[0].image = imgs.left_fork_semantic == floor_label;
-        cameras[1].image = imgs.right_fork_semantic == floor_label;
+        cameras[2].image = results[2].class_map == floor_label;
+        cameras[3].image = results[3].class_map == floor_label;
+        cameras[0].image = feature2d::getBiggestComponent(results[0].class_map == 2);
+        cameras[1].image = feature2d::getBiggestComponent(results[1].class_map == 2);
+
+        /* Visualize Semantics */
+        // std::vector<cv::Mat> visualized_semantics(4, cv::Mat(cameras[2].image.size(), CV_8UC3, cv::Scalar(0, 0, 0)));
+        std::vector<cv::Mat> visualized_semantics(4);
+        // visualized_semantics.reserve(4);
+        for (int i = 0; i < 4; ++i)
+        {
+            cv::Mat temp(cameras[2].image.size(), CV_8UC3, cv::Scalar(0, 0, 0));
+            temp.setTo(cv::Scalar(0, 255, 0), cameras[i].image);
+            if (i > 1)
+            {
+                temp.setTo(cv::Scalar(0, 0, 255), camera_frames_load[i - 2].image);
+            }
+            cv::addWeighted(temp, 0.5, *images[i], 0.5, 1.0, visualized_semantics[i]);
+        }
+
+        // for (int i = 2; i < 4; ++i)
+        // {
+        //     cv::Mat temp(cameras[2].image.size(), CV_8UC3, cv::Scalar(0, 0, 0));
+        //     temp.setTo(cv::Scalar(0, 0, 255), camera_frames_load[i - 2].image);
+        //     temp.setTo(cv::Scalar(0, 255, 0), cameras[i].image);
+        // }
+        // visualized_semantics[2].setTo(cv::Scalar(0, 0, 255), camera_frames_load[0].image);
+        // visualized_semantics[3].setTo(cv::Scalar(0, 0, 255), camera_frames_load[1].image);
+
+        cv::Mat visualized_semantics_top, visualized_semantics_bottom, visualized_semantics_grid;
+        cv::hconcat(visualized_semantics[0], visualized_semantics[1], visualized_semantics_top);
+        cv::hconcat(visualized_semantics[2], visualized_semantics[3], visualized_semantics_bottom);
+        cv::vconcat(visualized_semantics_top, visualized_semantics_bottom, visualized_semantics_grid);
+
+        cv_bridge::CvImage semantics_img_bridge;
+        semantics_img_bridge.header.stamp = this->now();
+        semantics_img_bridge.header.frame_id = "camera_frame";
+        semantics_img_bridge.encoding = sensor_msgs::image_encodings::RGB8;
+        semantics_img_bridge.image = visualized_semantics_grid;
+        auto semantics_ros_image = std::make_unique<sensor_msgs::msg::Image>();
+        semantics_img_bridge.toImageMsg(*semantics_ros_image);
+        mBevMapPub->publish(std::move(semantics_ros_image));
+
+        // const cv::Mat test_1 = results[2].class_map == 0;
+        // const cv::Mat test_2 = results[2].class_map == 1;
+        // const cv::Mat test_3 = results[2].class_map == 2;
+        // const cv::Mat test_4 = results[2].class_map == 3;
         cv::Mat free_space_bev = bevFusionBina(cameras, config);
+        // cv::Mat free_space_bev = bevFusionBina({cameras[0], cameras[1]}, config);
 
         cv::Mat bev_visualizetion;
         cv::cvtColor(free_space_bev, bev_visualizetion, cv::COLOR_GRAY2RGB);

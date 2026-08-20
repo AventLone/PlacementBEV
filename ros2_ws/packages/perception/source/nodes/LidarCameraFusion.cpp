@@ -143,22 +143,37 @@ void LidarCameraFusionNode::processFrame(const FrameSet& frame)
   //                                                    {mIntrinsics, lookupExtrinsics(mRightCameraFrame, stamp)}};
 
 		// const CameraLidarFusion fusion(cameras);
-		const CameraLidarFusion fusion(mIntrinsics, lookupExtrinsics(mLeftCameraFrame, stamp));
-	    pcl::PointCloud<pcl::PointXYZ> filtered_points;
-	    filtered_points.reserve(lidar_points.size() * 2 / 3);
+		const CameraLidarFusion fusion_left(mIntrinsics, lookupExtrinsics(mLeftCameraFrame, stamp));
+		const CameraLidarFusion fusion_right(mIntrinsics, lookupExtrinsics(mRightCameraFrame, stamp));
+
+	    pcl::PointCloud<pcl::PointXYZ> front_left_cloud, front_right_cloud;
+	    front_left_cloud.reserve(lidar_points.size() / 2);
+	    front_right_cloud.reserve(lidar_points.size() / 2);
 	    for (const auto& point : lidar_points)
 	    {
-	        if (point.x < 1.0f)
+	        if (point.x > 0.0f)
 	        {
-	            filtered_points.emplace_back(point);
+	            // front_left_cloud.emplace_back(point);
+	            continue;
+	        }
+
+	        if (point.y > 0.1f && point.y < 8.0f)
+	        {
+	            front_right_cloud.emplace_back(point);
+	        }
+	        else if (point.y < -0.1f && point.y > -8.0f)
+	        {
+	            front_left_cloud.emplace_back(point);
 	        }
 	    }
 	    // RCLCPP_INFO(get_logger(), "Size of original cloud is %lu, while filtered is %lu.", lidar_points.size(), filtered_points.size());
 	    // const auto fused_points = fusion.colorizePointCloudMultiCamera(filtered_points, {left_bgr, right_bgr}, mUseDistortion);
-		const auto fused_points = fusion.colorizePointCloud(filtered_points, left_bgr, mUseDistortion);
+	    const auto fused_points_left = fusion_left.colorizePointCloud(front_left_cloud, left_bgr, mUseDistortion);
+		const auto fused_points_right = fusion_right.colorizePointCloud(front_right_cloud, right_bgr, mUseDistortion);
+	    const auto fused_points = *fused_points_left + *fused_points_right;
 
 		CloudMsg output;
-		pcl::toROSMsg(*fused_points, output);
+		pcl::toROSMsg(fused_points, output);
 		output.header = lidar_msg->header;
 		output.header.frame_id = mLidarFrame;
 		mFusedCloudPub->publish(output);
@@ -180,3 +195,4 @@ void LidarCameraFusionNode::processFrame(const FrameSet& frame)
 							 "LiDAR-camera fusion failed: %s", exception.what());
 	}
 }
+

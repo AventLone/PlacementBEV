@@ -207,6 +207,33 @@ Line detectRectEdge(const cv::Mat& src_img, const EdgeType edge_type)
     return detectRectEdge(non_zero_points, edge_type);
 }
 
+cv::Mat getBiggestComponent(const cv::Mat& src_img)
+{
+    CV_Assert(!src_img.empty() && src_img.type() == CV_8UC1);
+
+    cv::Mat labels, stats, centroids;
+    const int label_count = cv::connectedComponentsWithStats(src_img, labels, stats, centroids, 8, CV_32S);
+    if (label_count <= 1)
+    {
+        return cv::Mat::zeros(src_img.size(), src_img.type());
+    }
+
+    int biggest_label = 1;
+    int biggest_area = stats.at<int>(1, cv::CC_STAT_AREA);
+    for (int label = 2; label < label_count; ++label)
+    {
+        if (const int area = stats.at<int>(label, cv::CC_STAT_AREA); area > biggest_area)
+        {
+            biggest_area = area;
+            biggest_label = label;
+        }
+    }
+
+    cv::Mat dst = cv::Mat::zeros(src_img.size(), src_img.type());
+    src_img.copyTo(dst, labels == biggest_label);
+    return dst;
+}
+
 bool findInliers(const cv::Mat& src_img, std::vector<cv::Point>& inliers, const float dist_thresh, const int iters)
 {
     std::vector<cv::Point> points;
@@ -235,8 +262,8 @@ bool findInliers(const cv::Mat& src_img, std::vector<cv::Point>& inliers, const 
 
         //line in xy-plane: a*x + b*y + d = 0
         const auto a = static_cast<float>(p1.y - p2.y);
-        const float b = static_cast<float>(p2.x - p1.x);
-        const float d = static_cast<float>(p1.x * p2.y - p2.x * p1.y);
+        const auto b = static_cast<float>(p2.x - p1.x);
+        const auto d = static_cast<float>(p1.x * p2.y - p2.x * p1.y);
 
         const float norm = std::hypot(a, b);
         if (norm < 1e-6f)

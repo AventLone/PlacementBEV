@@ -41,6 +41,14 @@ public:
     SemanticResult segment(const cv::Mat& image, bool swap_rb = true,
                            const cv::Scalar& mean = {0.485, 0.456, 0.406}, const cv::Scalar& std_ = {0.229, 0.224, 0.225});
 
+    std::vector<SemanticResult> segmentBatch(const std::vector<cv::Mat>& images, bool swap_rb = true,
+                                             const cv::Scalar& mean = {0.485, 0.456, 0.406},
+                                             const cv::Scalar& std_ = {0.229, 0.224, 0.225});
+
+    [[nodiscard]] int batchSize() const noexcept { return mBatchSize; }
+    [[nodiscard]] nvinfer1::DataType inputType() const noexcept { return mInputType; }
+    [[nodiscard]] nvinfer1::DataType outputType() const noexcept { return mOutputType; }
+
     // Backward-compatible API name to simplify transition from the previous wrapper.
     // SemanticResult seg(const cv::Mat& image,
     //                    const bool swap_rb = true,
@@ -59,7 +67,7 @@ private:
         bool is_label_map{false};
     };
 
-    Logger mLogger;
+    inline static Logger sLogger{};
     void* mCudaStream{nullptr};
     std::unique_ptr<nvinfer1::ICudaEngine> mCudaEngine;
     std::unique_ptr<nvinfer1::IExecutionContext> mContext;
@@ -67,10 +75,14 @@ private:
     std::string mOutputName;
 
     cv::Size mInputSize;
+    int mBatchSize{0};
+    nvinfer1::DataType mInputType{nvinfer1::DataType::kFLOAT};
+    nvinfer1::DataType mOutputType{nvinfer1::DataType::kFLOAT};
     TensorShapeInfo mOutputShape;
 
     std::unordered_map<std::string, CudaBuffer> mCudaBuffers;
     std::vector<float> mOutputTensor;
+    std::vector<uint16_t> mOutputTensorHalf;
 
     static std::vector<char> readModel(const std::string& file_path);
 
@@ -86,7 +98,7 @@ private:
                                          const cv::Scalar& std_,
                                          bool swap_rb);
 
-    SemanticResult postprocess(const cv::Size& original_size) const;
+    SemanticResult postprocess(const cv::Size& original_size, int batch_index) const;
 };
 
 inline std::vector<cv::Vec3b> makePascalLikeColorMap(const int num_classes)
