@@ -8,8 +8,10 @@
 namespace
 {
 
-constexpr double kVisibilityRayToleranceMeters = 0.05;
-constexpr double kVisibilityDistanceToleranceMeters = 0.05;
+// constexpr double kVisibilityDistanceToleranceMeters = 0.05;
+constexpr double kVisibilityDistanceToleranceMeters = 0.5;
+// Neighborhood (in pixels) treated as belonging to the same ray for occlusion purposes.
+constexpr int kVisibilityPixelRadius = 2;
 
 cv::Mat normalizeDistCoeffs(const cv::Mat& dist_coeffs)
 {
@@ -28,37 +30,45 @@ cv::Mat normalizeDistCoeffs(const cv::Mat& dist_coeffs)
     throw std::invalid_argument("dist_coeffs must be a vector-like matrix.");
 }
 
-cv::Vec3d pointInCameraFrame(const pcl::PointXYZ& point_l, const CameraCalibration& camera)
+// O(N + W*H) occlusion test: buckets each point's projected depth into its pixel, takes
+// the per-pixel minimum over a small neighborhood (emulating the old ray tolerance), and
+// marks a point occluded if something closer landed at/near its pixel. Replaces an earlier
+// O(N^2) ray-based GPU test that didn't scale past a few thousand points per camera.
+std::vector<uint8_t> computePixelVisibilityMask(const std::vector<cv::Point2i>& uvs, const std::vector<double>& depths,
+                                                 const cv::Size& image_size)
 {
-    return camera.extrinsics.R_cl * cv::Vec3d(point_l.x, point_l.y, point_l.z) + camera.extrinsics.t_cl;
-}
-
-bool isVisibleFromCamera(const cv::Vec3d& point_c, const std::vector<cv::Vec3d>& cloud_points_c)
-{
-    const double target_ray_distance = cv::norm(point_c);
-    const cv::Vec3d ray_direction = point_c / target_ray_distance;
-
-    for (const cv::Vec3d& other_point_c : cloud_points_c)
+    cv::Mat depth_buffer(image_size, CV_32F, cv::Scalar(std::numeric_limits<float>::max()));
+    for (size_t i = 0; i < uvs.size(); ++i)
     {
-        const double other_ray_distance = other_point_c.dot(ray_direction);
-        if (other_ray_distance <= 0.0 || other_ray_distance >= target_ray_distance)
+        if (uvs[i].x < 0)
+        {
+            continue;
+        }
+        auto& cell = depth_buffer.at<float>(uvs[i].y, uvs[i].x);
+        cell = std::min(cell, static_cast<float>(depths[i]));
+    }
+
+    const cv::Mat kernel = cv::getStructuringElement(
+        cv::MORPH_RECT, cv::Size(2 * kVisibilityPixelRadius + 1, 2 * kVisibilityPixelRadius + 1));
+    cv::Mat min_depth_neighborhood;
+    cv::erode(depth_buffer, min_depth_neighborhood, kernel);
+
+    std::vector<uint8_t> mask(uvs.size(), 1U);
+    for (size_t i = 0; i < uvs.size(); ++i)
+    {
+        if (uvs[i].x < 0)
         {
             continue;
         }
 
-        const cv::Vec3d ray_residual = other_point_c - other_ray_distance * ray_direction;
-        if (cv::norm(ray_residual) > kVisibilityRayToleranceMeters)
+        if (const float nearest_depth = min_depth_neighborhood.at<float>(uvs[i].y, uvs[i].x);
+            depths[i] > static_cast<double>(nearest_depth) + kVisibilityDistanceToleranceMeters)
         {
-            continue;
-        }
-
-        if (other_ray_distance + kVisibilityDistanceToleranceMeters < target_ray_distance)
-        {
-            return false;
+            mask[i] = 0U;
         }
     }
 
-    return true;
+    return mask;
 }
 
 } // namespace
@@ -149,18 +159,8 @@ std::vector<cv::Point2i> CameraLidarFusion::projectToImage(const pcl::PointCloud
         throw std::invalid_argument("projectToImage(single) requires exactly one camera. Use projectToImages for multi-camera.");
     }
 
-    std::vector<cv::Point2i> pixels;
-    pixels.reserve(lidar_points.size());
-
-    std::vector<cv::Vec3d> camera_points;
-    if (use_visibility_test)
-    {
-        camera_points.reserve(lidar_points.size());
-        for (const auto& point : lidar_points)
-        {
-            camera_points.push_back(pointInCameraFrame(point, mCameras.front()));
-        }
-    }
+    std::vector<cv::Point2i> pixels(lidar_points.size(), cv::Point2i(-1, -1));
+    std::vector<double> depths(lidar_points.size(), 0.0);
 
     for (size_t point_idx = 0; point_idx < lidar_points.size(); ++point_idx)
     {
@@ -170,23 +170,28 @@ std::vector<cv::Point2i> CameraLidarFusion::projectToImage(const pcl::PointCloud
 
         if (!projectPoint(point, mCameras.front(), uv, depth, use_distortion))
         {
-            pixels.emplace_back(-1, -1);
             continue;
         }
 
         if (uv.x < 0 || uv.x >= image_size.width || uv.y < 0 || uv.y >= image_size.height)
         {
-            pixels.emplace_back(-1, -1);
             continue;
         }
 
-        if (use_visibility_test && !isVisibleFromCamera(camera_points[point_idx], camera_points))
+        pixels[point_idx] = uv;
+        depths[point_idx] = depth;
+    }
+
+    if (use_visibility_test)
+    {
+        const std::vector<uint8_t> visibility_mask = computePixelVisibilityMask(pixels, depths, image_size);
+        for (size_t point_idx = 0; point_idx < pixels.size(); ++point_idx)
         {
-            pixels.emplace_back(-1, -1);
-            continue;
+            if (pixels[point_idx].x >= 0 && visibility_mask[point_idx] == 0U)
+            {
+                pixels[point_idx] = {-1, -1};
+            }
         }
-
-        pixels.push_back(uv);
     }
 
     return pixels;
@@ -251,39 +256,17 @@ std::vector<cv::Point2i> CameraLidarFusion::projectToImages(const pcl::PointClou
         throw std::invalid_argument("image_sizes size must match number of cameras.");
     }
 
-    std::vector<cv::Point2i> pixels;
-    pixels.reserve(lidar_points.size());
+    const size_t point_count = lidar_points.size();
+    std::vector<std::vector<cv::Point2i>> per_camera_uv(mCameras.size(), std::vector<cv::Point2i>(point_count, cv::Point2i(-1, -1)));
+    std::vector<std::vector<double>> per_camera_depth(mCameras.size(), std::vector<double>(point_count, 0.0));
 
-    std::vector<std::vector<cv::Vec3d>> camera_points;
-    if (use_visibility_test)
+    for (size_t cam_idx = 0; cam_idx < mCameras.size(); ++cam_idx)
     {
-        camera_points.resize(mCameras.size());
-        for (size_t cam_idx = 0; cam_idx < mCameras.size(); ++cam_idx)
-        {
-            camera_points[cam_idx].reserve(lidar_points.size());
-            for (const auto& point : lidar_points)
-            {
-                camera_points[cam_idx].push_back(pointInCameraFrame(point, mCameras[cam_idx]));
-            }
-        }
-    }
-
-    camera_indices.clear();
-    camera_indices.reserve(lidar_points.size());
-
-    for (size_t point_idx = 0; point_idx < lidar_points.size(); ++point_idx)
-    {
-        const auto& point = lidar_points[point_idx];
-        cv::Point2i best_uv(-1, -1);
-        int best_camera = -1;
-        double best_depth = std::numeric_limits<double>::max();
-
-        for (size_t cam_idx = 0; cam_idx < mCameras.size(); ++cam_idx)
+        for (size_t point_idx = 0; point_idx < point_count; ++point_idx)
         {
             cv::Point2i uv(-1, -1);
             double depth = 0.0;
-
-            if (!projectPoint(point, mCameras[cam_idx], uv, depth, use_distortion))
+            if (!projectPoint(lidar_points[point_idx], mCameras[cam_idx], uv, depth, use_distortion))
             {
                 continue;
             }
@@ -294,21 +277,52 @@ std::vector<cv::Point2i> CameraLidarFusion::projectToImages(const pcl::PointClou
                 continue;
             }
 
-            if (depth < best_depth)
+            per_camera_uv[cam_idx][point_idx] = uv;
+            per_camera_depth[cam_idx][point_idx] = depth;
+        }
+    }
+
+    std::vector<std::vector<uint8_t>> visibility_masks;
+    if (use_visibility_test)
+    {
+        visibility_masks.resize(mCameras.size());
+        for (size_t cam_idx = 0; cam_idx < mCameras.size(); ++cam_idx)
+        {
+            visibility_masks[cam_idx] = computePixelVisibilityMask(per_camera_uv[cam_idx], per_camera_depth[cam_idx],
+                                                                    image_sizes[cam_idx]);
+        }
+    }
+
+    std::vector<cv::Point2i> pixels;
+    pixels.reserve(point_count);
+    camera_indices.clear();
+    camera_indices.reserve(point_count);
+
+    for (size_t point_idx = 0; point_idx < point_count; ++point_idx)
+    {
+        cv::Point2i best_uv(-1, -1);
+        int best_camera = -1;
+        double best_depth = std::numeric_limits<double>::max();
+
+        for (size_t cam_idx = 0; cam_idx < mCameras.size(); ++cam_idx)
+        {
+            const cv::Point2i& uv = per_camera_uv[cam_idx][point_idx];
+            if (uv.x < 0)
+            {
+                continue;
+            }
+
+            if (use_visibility_test && visibility_masks[cam_idx][point_idx] == 0U)
+            {
+                continue;
+            }
+
+            if (const double depth = per_camera_depth[cam_idx][point_idx]; depth < best_depth)
             {
                 best_depth = depth;
                 best_uv = uv;
                 best_camera = static_cast<int>(cam_idx);
             }
-
-        }
-
-        if (use_visibility_test && best_camera >= 0 &&
-            !isVisibleFromCamera(camera_points[static_cast<size_t>(best_camera)][point_idx],
-                                 camera_points[static_cast<size_t>(best_camera)]))
-        {
-            best_uv = {-1, -1};
-            best_camera = -1;
         }
 
         pixels.push_back(best_uv);

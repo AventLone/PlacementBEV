@@ -5,6 +5,10 @@ if (NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release)
 endif ()
 
+#if (NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
+#    set(CMAKE_CUDA_ARCHITECTURES native)
+#endif ()
+
 if (CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     add_compile_options(-Wall -Wextra -Wpedantic)
 endif ()
@@ -24,7 +28,7 @@ set(TENSORRT_LIBRARY "/usr/lib/x86_64-linux-gnu/libnvinfer.so")
 find_package(ament_cmake_auto REQUIRED)
 ament_auto_find_build_dependencies() # Automaticly find all the packages mentioned in 'package.xml'
 
-file(GLOB_RECURSE SOURCE_FILES ${CMAKE_CURRENT_SOURCE_DIR}/source/*.cpp)
+file(GLOB_RECURSE SOURCE_FILES ${CMAKE_CURRENT_SOURCE_DIR}/source/*.cpp ${CMAKE_CURRENT_SOURCE_DIR}/source/*.cu)
 ament_auto_add_executable(perception ${SOURCE_FILES})
 target_include_directories(perception PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -32,6 +36,10 @@ target_include_directories(perception PUBLIC
     ${TENSORRT_INCLUDE_DIR}
     ${PCL_INCLUDE_DIRS}
 )
+#set_target_properties(perception PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+# Gives each host thread its own implicit CUDA stream so concurrent callers
+# (e.g. left/right camera fusion running on separate threads) don't serialize on the GPU.
+target_compile_options(perception PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--default-stream=per-thread>)
 target_link_libraries(perception
     CUDA::cudart
     ${OpenCV_LIBS}

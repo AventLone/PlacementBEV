@@ -1,5 +1,8 @@
 #include "perception/nodes/LidarCameraFusion.h"
 
+#include <chrono>
+#include <future>
+
 #include <cv_bridge/cv_bridge.hpp>
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
@@ -97,17 +100,17 @@ void LidarCameraFusionNode::imagesHandler(const CloudMsg::ConstSharedPtr& lidar_
 
 void LidarCameraFusionNode::workerLoop()
 {
-	while (true)
+	while (rclcpp::ok())
 	{
 		FrameSet frame;
 		{
 			std::unique_lock lock(mQueueMutex);
 			mQueueCondition.wait(lock, [this] { return mShutdown || !mFrameQueue.empty(); });
 
-			if (mShutdown && mFrameQueue.empty())
-			{
-				return;
-			}
+		    if (mShutdown)
+		    {
+		        break;
+		    }
 
 			frame = std::move(mFrameQueue.front());
 			mFrameQueue.pop_front();
@@ -130,38 +133,73 @@ void LidarCameraFusionNode::processFrame(const FrameSet& frame)
 							 mLidarFrame.c_str(), lidar_msg->header.frame_id.c_str());
 	}
 
+	const auto start_time = std::chrono::steady_clock::now();
+	const auto elapsed_ms = [&start_time]
+	{
+		return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start_time).count();
+	};
+
 	try
 	{
 		pcl::PointCloud<pcl::PointXYZ> lidar_points;
 		pcl::fromROSMsg(*lidar_msg, lidar_points);
+		const double t_after_cloud_decode = elapsed_ms();
 
 		const cv::Mat left_bgr = cv_bridge::toCvCopy(left_image_msg, "bgr8")->image;
 		const cv::Mat right_bgr = cv_bridge::toCvCopy(right_image_msg, "bgr8")->image;
+		const double t_after_image_decode = elapsed_ms();
 
 		const rclcpp::Time stamp(lidar_msg->header.stamp);
-		// const std::vector<CameraCalibration> cameras{{mIntrinsics, lookupExtrinsics(mLeftCameraFrame, stamp)},
-  //                                                    {mIntrinsics, lookupExtrinsics(mRightCameraFrame, stamp)}};
-
-		// const CameraLidarFusion fusion(cameras);
-		const CameraLidarFusion fusion(mIntrinsics, lookupExtrinsics(mLeftCameraFrame, stamp));
-	    pcl::PointCloud<pcl::PointXYZ> filtered_points;
-	    filtered_points.reserve(lidar_points.size() * 2 / 3);
+	    pcl::PointCloud<pcl::PointXYZ> front_left_cloud, front_right_cloud;
+	    front_left_cloud.reserve(lidar_points.size() / 2);
+	    front_right_cloud.reserve(lidar_points.size() / 2);
 	    for (const auto& point : lidar_points)
 	    {
-	        if (point.x < 1.0f)
-	        {
-	            filtered_points.emplace_back(point);
-	        }
+		    if (point.x > 0.0f)
+		    {
+		        continue;
+		    }
+
+		    if (point.y > 0.2f && point.y < 8.0f)
+		    {
+		        front_right_cloud.emplace_back(point);
+		    }
+		    else if (point.y < -0.2f && point.y > -8.0f)
+		    {
+		        front_left_cloud.emplace_back(point);
+		    }
 	    }
-	    // RCLCPP_INFO(get_logger(), "Size of original cloud is %lu, while filtered is %lu.", lidar_points.size(), filtered_points.size());
-	    // const auto fused_points = fusion.colorizePointCloudMultiCamera(filtered_points, {left_bgr, right_bgr}, mUseDistortion);
-		const auto fused_points = fusion.colorizePointCloud(filtered_points, left_bgr, mUseDistortion);
+	    const double t_after_filter = elapsed_ms();
+
+		// Left and right sides are independent, so run their TF lookup + projection +
+		// GPU visibility test concurrently on dedicated persistent threads (not std::async,
+		// which typically spawns a fresh OS thread per call and would defeat the CUDA
+		// thread_local buffer reuse in visibility_cuda.cu).
+		pcl::PointCloud<pcl::PointXYZRGB>::Ptr fused_points_left;
+		pcl::PointCloud<pcl::PointXYZRGB>::Ptr fused_points_right;
+
+	    const CameraLidarFusion fusion_left(mIntrinsics, lookupExtrinsics(mLeftCameraFrame, stamp));
+	    fused_points_left = fusion_left.colorizePointCloud(front_left_cloud, left_bgr, mUseDistortion);
+
+	    const CameraLidarFusion fusion_right(mIntrinsics, lookupExtrinsics(mRightCameraFrame, stamp));
+	    fused_points_right = fusion_right.colorizePointCloud(front_right_cloud, right_bgr, mUseDistortion);
+
+	    const auto fused_points = *fused_points_left + *fused_points_right;
+	    const double t_after_colorize = elapsed_ms();
 
 		CloudMsg output;
-		pcl::toROSMsg(*fused_points, output);
+		pcl::toROSMsg(fused_points, output);
 		output.header = lidar_msg->header;
 		output.header.frame_id = mLidarFrame;
 		mFusedCloudPub->publish(output);
+
+		RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000,
+		                     "Fusion took %.2f ms total (cloud decode %.2f, image decode %.2f, filter %.2f, "
+		                     "colorize (parallel L/R) %.2f, publish %.2f). Points: total=%zu left=%zu right=%zu.",
+		                     elapsed_ms(), t_after_cloud_decode, t_after_image_decode - t_after_cloud_decode,
+		                     t_after_filter - t_after_image_decode, t_after_colorize - t_after_filter,
+		                     elapsed_ms() - t_after_colorize, lidar_points.size(), front_left_cloud.size(),
+		                     front_right_cloud.size());
 	}
 	catch (const tf2::TransformException& exception)
 	{
